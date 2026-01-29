@@ -113,6 +113,7 @@ _EXPORTS_SECTION: Final[str] = 'exports'
 _WORKERLIB_PREFIX: Final[str] = '_workerlib_'
 _ADAPTER_MARKER: Final[str] = _WORKERLIB_PREFIX + 'adapter'  # Used to differential adapter data from other mappings
 _ADAPTER_VALUE: Final[str] = 'value'
+_ADAPTER_CLASSNAME: Final[str] = 'className'
 _START_TIME: Final[str] = 'startTime'
 _START_TIME_ADAPTER: Final[str] = _WORKERLIB_PREFIX + _START_TIME  # Used to differentiate start time data from other adapters
 _CONNECT_REQUEST: Final[str] = _WORKERLIB_PREFIX + 'connectRequest'
@@ -203,12 +204,12 @@ def _adaptersFromSequence(module: ModuleType, names: Sequence[str | Sequence[str
     `[typeObject, encoderFunction, decoderFunction]`.
     """
     if not isinstance(names, Sequence):
-        _error(f"""Bad adapter tuple type {type(names)} for module {module.__name__}""")
+        _error(f"Bad adapter descriptor type for module {module.__name__}, must be a sequence, got {type(names)}")
     if not names:
-        _error(f"""Empty adapter tuple for module {module.__name__}""")
+        _error(f"Empty adapter descriptor for module {module.__name__}")
     if isinstance(names[0], str):
         if len(names) != 3:
-            _error(f"""Bad adapter settings for module {module.__name__}, must be '["className", "encoderFunction", "decoderFunction"]', got {names!r}""")
+            _error(f"""Bad adapter descriptor for module {module.__name__}, must be '["className", "encoderFunction", "decoderFunction"]', got {names!r}""")
         (cls, encoder, decoder) = _importFromModule(module, cast(Sequence[str], names))
         if not isclass(cls):
             _error(f'Bad adapter class "{names[0]}" for module {module.__name__}, must be a type, got {type(cls)}')
@@ -222,7 +223,7 @@ def _adaptersFromSequence(module: ModuleType, names: Sequence[str | Sequence[str
         for subSequence in names:
             yield from _adaptersFromSequence(module, subSequence, allowSubSequences = False)
     else:
-        _error("""Adapter specification should be either [strings] or [[strings], ...], third level of inclusion is not needed""")
+        _error("Adapter specification should be either [strings] or [[strings], ...], third level of inclusion is not needed")
 
 @typechecked
 def _importAdapters() -> None:
@@ -255,11 +256,15 @@ async def _to_js(obj: object) -> object:
                 value = await encoder(obj) if iscoroutinefunction(encoder) else encoder(obj)
             else:
                 value = obj  # Trying to pass the object as is, hoping it would work, like it does for `Enum`s
-            return {_ADAPTER_MARKER: cls.__name__, _ADAPTER_VALUE: value}  # Encoded class name is NOT the name of the type of object being encoded, but the name of the adapter thas has to be used to decode the object on the other side
+            return {
+                _ADAPTER_MARKER: cls.__name__,  # Encoded class name is NOT the name of the type of object being encoded, but the name of the adapter thas has to be used to decode the object on the other side
+                _ADAPTER_CLASSNAME: type(obj).__name__,  # This is the actual name of the type being transferred, but it is for informational and debugging purposes only, and is never used for decoding
+                _ADAPTER_VALUE: value
+            }
     if not isinstance(obj, _Transferable):
-        _log(f"WARNING: No adapter found for class {type(obj)}, and transport layer (JavaScript structured clone) would probably not accept it as is, see https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API/Structured_clone_algorithm")
-    if isinstance(obj, str | Buffer):  # Save it from being converted to `tuple` as an `Iterable`
-        return obj
+        _log(f"WARNING: No adapter found for class {type(obj)}, and transport layer (JavaScript structured clone) would probably not accept it as is, see https://developer.mozilla.org/docs/Web/API/Web_Workers_API/Structured_clone_algorithm")
+    if isinstance(obj, str | Buffer):
+        return obj  # Save it from being converted to `tuple` as an `Iterable`
     if isinstance(obj, Mapping):  # Should be checked before `Iterable`, as `Mapping` is an `Iterable` too
         return {await _to_js(k): await _to_js(v) for (k, v) in obj.items()}
     if isinstance(obj, Iterable):
@@ -276,8 +281,8 @@ async def _to_py(obj: object) -> object:
     """
     if hasattr(obj, 'to_py'):  # JsProxy
         return await _to_py(obj.to_py())
-    if isinstance(obj, str | Buffer):  # Save it from being converted to `tuple` as an `Iterable`
-        return obj
+    if isinstance(obj, str | Buffer):
+        return obj  # Save it from being converted to `tuple` as an `Iterable`
     if not isinstance(obj, Mapping):
         if isinstance(obj, Iterable):
             return tuple([await _to_py(v) for v in obj])  # pylint: disable=consider-using-generator
@@ -290,6 +295,7 @@ async def _to_py(obj: object) -> object:
         return obj
     if adapterName == _START_TIME_ADAPTER:
         return obj
+    _className = obj[_ADAPTER_CLASSNAME]
     value = obj[_ADAPTER_VALUE]
     for (cls, _encoder, decoder) in _adapters:
         if cls.__name__ == adapterName:
@@ -452,6 +458,7 @@ if RUNNING_IN_WORKER:  ##
                 _log(f"Returned {elapsedTime(callStartTime)} from {func.__name__}(): {ret}")
                 return {
                     _ADAPTER_MARKER: _START_TIME_ADAPTER,
+                    _ADAPTER_CLASSNAME: type(ret).__name__,
                     _ADAPTER_VALUE: ret,
                     _START_TIME: time(),  # Starting calculating time it would take to transfer the return value to the main thread
                 }
@@ -577,7 +584,7 @@ else:  ##  MAIN THREAD
         Must be the innermost decorator, as it implements JS transport for calls to another process.
 
         Uses `_to_js()` to convert arguments, and `_to_py()` to convert returned value.
-        Coordinates with `@_mainSerialized`.
+        Coordinates with `@_workerSerialized`.
         """
         @typechecked
         async def _mainSerializedWrapper(*args: object, **kwargs: object) -> T:
@@ -589,7 +596,7 @@ else:  ##  MAIN THREAD
             # ^^ WRAPPED CALL ^^
             return cast(T, await _to_py(ret))
 
-        if isfunction(looksLike) or iscoroutinefunction(looksLike):
+        if callable(looksLike):
             return wraps(looksLike)(_mainSerializedWrapper)
         ret: _CoroutineFunction[T] = wraps(cast(_CoroutineFunction[T], func))(_mainSerializedWrapper)
         assert isinstance(looksLike, str)
@@ -616,6 +623,7 @@ else:  ##  MAIN THREAD
             # ^^ WRAPPED CALL ^^
             if isinstance(ret, Mapping) and ret.get(_ADAPTER_MARKER) == _START_TIME_ADAPTER:
                 startTime = cast(_Time, ret[_START_TIME])
+                _className = cast(str, ret[_ADAPTER_CLASSNAME])
                 ret = cast(T, ret[_ADAPTER_VALUE])
                 _log(f"Transferred return value {elapsedTime(startTime)} from {func.__name__}()")
             return cast(T, ret)
@@ -657,7 +665,7 @@ else:  ##  MAIN THREAD
             setattr(ret, funcName, _mainLogged(_mainSerialized(func, funcName)))
 
         _importAdapters()  # Importing adapters late so that potential errors would not interrupt startup too early
-        _log("Connected to worker")
+        _log("Connected to the worker")
         return ret
 
     assert not globals().get(__EXPORT__), globals()[__EXPORT__]

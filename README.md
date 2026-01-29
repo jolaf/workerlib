@@ -2,7 +2,7 @@
 
 `workerlib` is a pure-[Python](https://python.org)
 library that provides transparent Python-to-Python calls
-from the main thread to workers in
+from the main thread to workers in a
 [PyScript](https://pyscript.net) environment.
 
 ## Background
@@ -31,16 +31,16 @@ with a mission of bringing Python everywhere.
 One of the important parts of the modern browser ecosystem is
 [Web Workers](https://developer.mozilla.org/docs/Web/API/Web_Workers_API) —
 the ability to have separate background processes that can do
-laborious calculations without blocking the main thread
+heavy calculations without blocking the main thread
 and thus making the browser page unresponsive.
 
 Being JavaScript-based, this mechanism is essentially cross-language –
 the main thread may be running one language, e.g., JavaScript or Python,
-and workers may be runninf other languages, like Python or
+and workers may be running other languages, like Python or
 [Lua](https://lua.org),
-and the browser provides the cross-process call capabilities.
+and the browser would provide the cross-process call capabilities.
 
-## PyScript Web workers interface
+## PyScript Web Workers interface
 
 For the reasons mentioned above, PyScript
 [interface](https://docs.pyscript.net/2026.1.1/user-guide/workers/)
@@ -56,7 +56,7 @@ on a way to transparent Python-to-Python calls.
 
 When a Python function is being called from another process
 and is passed an argument, it expects some Python object but gets a
-[JsProxy](https://pyodide.org/en/stable/usage/api/python-api/ffi.html#pyodide.ffi.JsProxy)
+[`JsProxy`](https://pyodide.org/en/stable/usage/api/python-api/ffi.html#pyodide.ffi.JsProxy)
 instance instead. There is a way to extract an actual Python object
 from that proxy, but it requires writing some additional code,
 which makes the whole interprocess communication cumbersome.
@@ -80,7 +80,7 @@ And `workerlib` is called upon to
 
 ### Complication #2: Limited data types
 
-JavaScript WebWorkers interface only allows a
+JavaScript Web Workers interface only allows a
 [limited number](https://developer.mozilla.org/docs/Web/API/Web_Workers_API/Structured_clone_algorithm)
 of JavaScript data types through.
 And most of them are JavaScript-specific
@@ -108,7 +108,7 @@ would receive a `JsProxy` wrapping a `list`.
 Collections may be nested, e.g., you may use `list[dict[str, Buffer]]`
 as a function argument or return type.
 
-The following typing annotations are not syntactically correct,
+The following typing annotations are not exactly correct,
 so treat them as just an illustration:
 
 ```Python3
@@ -116,7 +116,7 @@ from collections.abc import Buffer, Iterable, Mapping
 from numbers import Real
 from pyodide.ffi import JsProxy
 
-type _S = Real | str |  None
+type _S = Real | str | None
 type Sendable = _S | Buffer | Iterable[Sendable] | Mapping[_S, Sendable]
 type _K = int | float | bool | str | None 
 type _V = _K | memoryview | list[_V] | dict[_K, _V]
@@ -195,8 +195,8 @@ to run in a worker and be callable from the main thread, this is your way to go.
 "./YourModule2.py" = ""
 
 [exports]
-"YourModule1" = ["func1", "func2", ..., "funcK"]
-"YourModule2" = ["func3", "func4", ..., "funcN"]
+"YourModule1" = ["func1", "func2", …, "funcK"]
+"YourModule2" = ["func3", "func4", …, "funcN"]
 ```
 
 This is it. `workerlib` would start as a worker,
@@ -232,12 +232,12 @@ and would like to simplify calls to its functions, this is your way.
 
 ```Python3
 from workerlib import export
-from YourModule2 import func3, func4, ..., funcN
+from YourModule2 import func3, func4, …, funcN
 
-# Define sync or async `func1`, `func2`, ..., `funcK` here
+# Define sync or async `func1`, `func2`, …, `funcK` here
 
-export(func1, func2, ..., funcK)
-export(func3, func4, ..., funcN)
+export(func1, func2, …, funcK)
+export(func3, func4, …, funcN)
 ```
 
 This is it. In other aspects, everything would work exactly as in
@@ -255,14 +255,14 @@ yourWorker: Worker = await connectToWorker()
 ret = await yourWorker.func1(arg1, arg2, *args, kwarg1 = value, **kwargs)
 ```
 
-If you only have one `<script type="py" worker name="...">` tag in your page,
+If you only have one `<script type="py" worker name="…">` tag in your page,
 `connectToWorker()` would find it, extract the `name` attribute, and
 [connect](https://docs.pyscript.net/2026.1.1/user-guide/workers/#accessing-workers)
 to the worker by that name.
 
 If you have multiple
-[named workers](https://docs.pyscript.net/2026.1.1/api/workers/),
-you should specify the worker name explicitly:
+[named workers](https://docs.pyscript.net/2026.1.1/api/workers/)
+in your page, you should specify the worker name explicitly:
 
 ```Python3
 yourWorker = await connectToWorker("YourWorkerName")
@@ -280,9 +280,7 @@ Everything described above would only successfully transfer the
 Any class objects, including those you've created yourself,
 would not pass through and would cause the error like this if you try:
 
-> [!WARNING]
-> `JsException: DataCloneError: Failed to execute 'postMessage'
-> on 'MessagePort': [object Object] could not be cloned.`
+> `JsException: DataCloneError: Failed to execute 'postMessage' on 'MessagePort': [object Object] could not be cloned.`
 
 That's not a problem of this library, and not a problem of PyScript or Pyodide –
 it's an inherent limitation of the browser ecosystem.
@@ -399,7 +397,7 @@ the data "transfer" effectively instantaneous (**O(1)** complexity).
 
 Sometimes zero copying is not applicable, but anyway as few copies will be made
 during the transfer as possible. So `memoryview` would be the fastest way
-to transfer data from one process to another anyway.
+to transfer data from one process to another in any case.
 
 #### Example adapter for `PIL.Image`
 
@@ -408,6 +406,8 @@ Here's the possible operational adapter configuration for
 module:
 
 ```TOML
+packages = ["Pillow",]
+
 [files]
 "./imageProcessor.py" = ""
 
@@ -456,26 +456,32 @@ In situations like this you may specify `"None"` as encoder/decoder.
 
 `workerlib` provides the following APIs:
 
-### In main thread
+### In the main thread
 
-`class Worker`
-– simple class wrapping PyScript `JsProxy` of a `worker` object
+##### `class Worker`
+
+Simple class wrapping PyScript `JsProxy` of a `worker` object
 and providing worker functions to be called.
+
 See [Main configuration](#main-configuration) for usage.
 
-`async def connectToWorker(workerName: str | None = None) -> Worker`
-– connects to the worker with the specified name
-or to the only named worker in your page if name is not specified.
+##### `async def connectToWorker(workerName: str | None = None) -> Worker`
+
+Connects to the worker with the specified name
+or to the only named worker in your page if the name is not specified.
+
 See [Main configuration](#main-configuration) for usage.
 
-### In worker
+### In a worker
 
-`def export(*functions: FunctionOrCoroutine) -> None`
-– must be imported from `workerlib` and called
+##### `def export(*functions: CallableOrCoroutine) -> None`
+
+Must be imported from `workerlib` and called
 to make `functions` available to the main thread.
 
-If `workerlib.py` is mentioned explicitly in `<script type="py" worker>` tag
-or `pyscript.create_named_worker()` call, no explicit exports are needed;
+If `workerlib.py` is mentioned explicitly in a
+`<script type="py" worker name="…">` tag
+or a `pyscript.create_named_worker()` call, no explicit exports are needed;
 everything mentioned in the config would be exported automatically.
 
 ### Auxiliary stuff in both the main and workers
@@ -484,25 +490,32 @@ Besides the described essential functionality,
 `workerlib` also has some useful internals
 that could be imported from it and used if needed:
 
-`diagnostics: Sequence[str]`
-– Sequence of strings with detailed diagnostics of system components
+##### `diagnostics: Sequence[str]`
+
+Sequence of strings with detailed diagnostics of system components
 that can be nicely printed to the browser console, line by line.
 `workerlib` does exactly that if started as a worker.
 
-`def elapsedTime(startTime: float | int) -> str`
-– returns a diagnostic string mentioning time,
+##### `def elapsedTime(startTime: float | int) -> str`
+
+Returns a diagnostic string mentioning time,
 in milliseconds or seconds, since `startTime`.
+
 Use [`time.time()`](https://docs.python.org/3/library/time.html#time.time)
 to initialize `startTime` beforehand.
 
-`systemVersions: Mapping[str, str]`
-– lists detected runtime versions of system components
+##### `systemVersions: Mapping[str, str]`
+
+Lists detected runtime versions of system components
 (PyScript, Pyodide, Python, Emscripten).
+
 May be useful for diagnostic purposes.
 
-`@typechecked`
-– decorator that may be used for runtime type checking
+##### `@typechecked`
+
+Decorator that may be used for runtime type checking
 functions or the whole classes.
+
 If [`"beartype"`](https://beartype.readthedocs.io)
 is included in config `[packages]`,
 its [`@beartype`](https://beartype.readthedocs.io/en/stable/api_decor/#beartype-decorator-api)
@@ -510,7 +523,7 @@ decorator is used. Otherwise, `@typechecked` does nothing.
 
 ## Under the hood
 
-If you want to check how this is working,
+If you want to understand how this is working,
 the main pieces of [code](./workerlib.py)
 you should look into are
 `_mainSerialized()` and `_workerSerialized()`
@@ -521,8 +534,9 @@ Also check `_to_js()` and `_to_py()` converter coroutines those decorators use.
 
 ## Please ask and comment
 
-If you have any questions, comments, or suggestions on this library,
-please contact me
+If you have any questions, comments, or suggestions on this library, please
+[file an issue](https://github.com/jolaf/workerlib/issues)
+or contact me directly
 via [Telegram](https://t.me/jolaf)
 or [e-mail](mailto:vmzakhar@gmail.com).
 
