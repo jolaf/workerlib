@@ -164,7 +164,7 @@ unless you convert those objects to something that can be transferred yourself.
 `workerlib` only provides for calls from the main thread to workers,
 NOT vice versa.
 
-`workerlib` is a single pure-Python module.
+`workerlib` is a single pure-Python module without external dependencies.
 
 `workerlib` does not need DOM access and may be used in
 [`sync_main_only = true`](https://docs.pyscript.net/2026.1.1/user-guide/configuration/#sync_main_only)

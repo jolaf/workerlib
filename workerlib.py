@@ -1,5 +1,5 @@
 #
-# Note: this library is intended for PyScript apps, it is useless outside the browser
+# Note: this library is intended for PyScript / Pyodide apps, it is useless outside the browser
 #
 # Tested on PyScript 26.1.1 / Pyodide 0.29.1 / Python 3.13.2
 #
@@ -15,7 +15,7 @@ from time import time
 from types import ModuleType
 from typing import cast, Any, Final, NoReturn, TypeAlias
 
-from pyscript import config, RUNNING_IN_WORKER  # Yes, this module is PyScript-only and won't work outside the browser
+from pyscript import config, RUNNING_IN_WORKER  # Yes, this module is indeed PyScript-only and won't work outside the browser
 
 # We name all internal stuff starting with `_` underscore to minimize the chance of a conflict with exported user functions
 type _Args = tuple[object, ...]
@@ -258,7 +258,7 @@ async def _to_js(obj: object) -> object:
                 value = obj  # Trying to pass the object as is, hoping it would work, like it does for `Enum`s
             return {
                 _ADAPTER_MARKER: cls.__name__,  # Encoded class name is NOT the name of the type of object being encoded, but the name of the adapter thas has to be used to decode the object on the other side
-                _ADAPTER_CLASSNAME: type(obj).__name__,  # This is the actual name of the type being transferred, but it is for informational and debugging purposes only, and is never used for decoding
+                _ADAPTER_CLASSNAME: type(obj).__name__,  # This is the actual name of the type being transferred, but it is for informational and debugging purposes only and is never used for decoding
                 _ADAPTER_VALUE: value
             }
     if not isinstance(obj, _Transferable):
@@ -637,7 +637,7 @@ else:  ##  MAIN THREAD
         That worker would use this `name` as a prefix to console logging messages.
 
         If `name` is not specified, looks for the
-        `<script type="py" worker name="...">` tag in the page.
+        `<script type="py" worker name="…">` tag in the page.
         If no such a tag is found, or more than one is found,
         raises an exception.
         """
