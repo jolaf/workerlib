@@ -1,0 +1,8 @@
+theme: jekyll-theme-minimal
+
+title: workerlib
+description: PyScript / Pyodide library for transparent Python-to-Python worker calls
+lang: en
+
+show_downloads: "true"
+google_analytics: G-E9101DVB96

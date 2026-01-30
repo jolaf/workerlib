@@ -1,0 +1,4 @@
+name = "workerlib"
+
+[files]
+"./workerlib.py" = ""
