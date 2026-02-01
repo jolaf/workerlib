@@ -3,7 +3,11 @@
 `workerlib` is a pure-[Python](https://python.org)
 library that provides transparent Python-to-Python calls
 from the main thread to workers in a
-[PyScript](https://pyscript.net) environment.
+[PyScript](https://pyscript.net)/[Pyodide](https://pyodide.org) environment.
+
+`workerlib` is written on Python 3.13 and thus is not usable
+with [MicroPython](https://micropython.org);
+instead, Pyodide must be used for both main thread and workers.
 
 ## Background
 
@@ -116,7 +120,7 @@ from collections.abc import Buffer, Iterable, Mapping
 from numbers import Real
 from pyodide.ffi import JsProxy
 
-type _S = Real | str | None
+type _S = Real | str | None  # Note: `Real` includes `Enum`s!
 type Sendable = _S | Buffer | Iterable[Sendable] | Mapping[_S, Sendable]
 type _K = int | float | bool | str | None 
 type _V = _K | memoryview | list[_V] | dict[_K, _V]
