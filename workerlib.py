@@ -3,6 +3,7 @@
 #
 # Tested on PyScript 26.1.1 / Pyodide 0.29.1 / Python 3.13.2
 #
+from asyncio import gather
 from collections.abc import Coroutine, Buffer, Callable, Iterable, Iterator, Mapping, Sequence
 from functools import wraps
 from importlib import import_module
@@ -308,9 +309,9 @@ async def _to_js(obj: object) -> object:
     if isinstance(obj, Real | str | Buffer | None):  # ToDo: Define a type?
         return obj  # Save it from being converted to `tuple` as an `Iterable`
     if isinstance(obj, Mapping):  # Should be checked before `Iterable`, as `Mapping` is an `Iterable` too
-        return {await _to_js(k): await _to_js(v) for (k, v) in obj.items()}  # ToDo: employ gather()
+        return {k: v for (k, v) in await gather(*(gather(*(_to_js(x) for x in k_v)) for k_v in obj.items()))}  # pylint: disable=unnecessary-comprehension
     if isinstance(obj, Iterable):
-        return tuple([await _to_js(v) for v in obj])  # pylint: disable=consider-using-generator
+        return await gather(*(_to_js(v) for v in obj))
     for (cls, encoder, _decoder) in _adapters:  # Trying adapters that are less specific than transferable types – i.e., `object`
         if isinstance(obj, cls):
             if encoder:  # noqa: SIM108
@@ -340,10 +341,10 @@ async def _to_py(obj: object) -> object:
         return obj  # Save it from being converted to `tuple` as an `Iterable`
     if not isinstance(obj, Mapping):
         if isinstance(obj, Iterable):
-            return tuple([await _to_py(v) for v in obj])  # pylint: disable=consider-using-generator
+            return tuple(await gather(*(_to_py(v) for v in obj)))
         return obj
     # isinstance(obj, Mapping)
-    obj = {await _to_py(k): await _to_py(v) for (k, v) in obj.items()}
+    obj = {k: v for (k, v) in await gather(*(gather(*(_to_py(x) for x in k_v)) for k_v in obj.items()))}  # pylint: disable=unnecessary-comprehension
 
     # Checking for adapter
     if not (adapterName := obj.get(_ADAPTER_MARKER)):
@@ -646,8 +647,8 @@ else:  ##  MAIN THREAD
         @typechecked
         async def _mainSerializedWrapper(*args: object, **kwargs: object) -> T:
             assert isinstance(func, JsProxy), type(func)
-            args = [await _to_js(arg) for arg in args]  # type: ignore[assignment]
-            kwargs = {key: await _to_js(value) for (key, value) in kwargs.items()}
+            args = await gather(*(_to_js(arg) for arg in args))  # type: ignore[assignment]
+            kwargs = dict(zip(kwargs.keys(), await gather(*(_to_js(v) for v in kwargs.values())), strict = True))
             # vv WRAPPED CALL vv
             ret = await cast(_CoroutineFunction[T], func)(*args, kwargs)  # Passing `kwargs` as a positional argument because `**kwargs` don't get serialized properly and are sent as the last of `args` anyway
             # ^^ WRAPPED CALL ^^
