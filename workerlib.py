@@ -28,7 +28,8 @@ type _CoroutineFunction[T = object] = Callable[..., _Coroutine[T]]
 type _CallableOrCoroutine[T = object] = Callable[..., T | _Coroutine[T]]
 type _Time = float | int
 type _Timed[T] = Mapping[str, str | _Time | T]
-_Transferable: TypeAlias = Real | Iterable | None  # type: ignore[type-arg]  # Using `type` or adding `[Any]` breaks `isinstance()`  # noqa: UP040
+_BasicTypes = Real | str | Buffer | None  # Using `type` breaks `isinstance()`
+_Transferable: TypeAlias = _BasicTypes | Iterable  # type: ignore[type-arg]  # Using `type` or adding `[Any]` breaks `isinstance()`  # noqa: UP040
 
 type _Adapter[T = object] = tuple[
     type[T],
@@ -218,7 +219,7 @@ def _importFromModule(module: str | ModuleType, qualNames: str | Iterable[str]) 
         module = _importModule(module)
     if isinstance(qualNames, str):
         qualNames = (qualNames,)
-    if printNames := tuple(n for n in qualNames if n not in _BUILTIN_SPECIALS and n not in __builtins__.__dict__):
+    if printNames := [n for n in qualNames if n not in _BUILTIN_SPECIALS and n not in __builtins__.__dict__]:
         _log(f"Importing from module {module.__name__}: {', '.join(printNames)}")
     for qualName in qualNames:
         assert isinstance(qualName, str)
@@ -234,7 +235,7 @@ def _importFromModule(module: str | ModuleType, qualNames: str | Iterable[str]) 
             yield obj
 
 @typechecked
-def _adaptersFromSequence(module: ModuleType, names: Sequence[str | Sequence[str]], allowSubSequences: bool = True) -> Iterator[_Adapter]:
+def _adaptersFromSequence(module: ModuleType, names: Sequence[str] | Sequence[Sequence[str]], allowSubSequences: bool = True) -> Iterator[_Adapter]:
     """
     Given a `module` and an adapter description triple
     `["className", "encoderName", "decoderName"]`
@@ -271,7 +272,7 @@ def _adaptersFromSequence(module: ModuleType, names: Sequence[str | Sequence[str
         _error("Adapter specification should be either [strings] or [[strings], …], third level of inclusion is not needed")
 
 @typechecked
-def _importAdapters() -> None:
+def _importAdapters() -> None:  # ToDo: Create _Adapter class
     """
     Reads `[adapters]` config section, imports the necessary modules
     and functions, and makes them available as the global `_adapters` list.
@@ -306,7 +307,7 @@ async def _to_js(obj: object) -> object:
                 _ADAPTER_FULLNAME: _fullName(obj),  # This is the actual name of the type being transferred, but it is for informational and debugging purposes only and usually is not used for decoding
                 _ADAPTER_VALUE: value
             }
-    if isinstance(obj, Real | str | Buffer | None):  # ToDo: Define a type?
+    if isinstance(obj, _BasicTypes):
         return obj  # Save it from being converted to `tuple` as an `Iterable`
     if isinstance(obj, Mapping):  # Should be checked before `Iterable`, as `Mapping` is an `Iterable` too
         return {k: v for (k, v) in await gather(*(gather(*(_to_js(x) for x in k_v)) for k_v in obj.items()))}  # pylint: disable=unnecessary-comprehension
@@ -337,7 +338,7 @@ async def _to_py(obj: object) -> object:
     """
     if hasattr(obj, 'to_py'):  # JsProxy
         return await _to_py(obj.to_py())
-    if isinstance(obj, Real | str | Buffer | None):  # ToDo: Define a type?
+    if isinstance(obj, _BasicTypes):
         return obj  # Save it from being converted to `tuple` as an `Iterable`
     if not isinstance(obj, Mapping):
         if isinstance(obj, Iterable):
@@ -356,8 +357,7 @@ async def _to_py(obj: object) -> object:
 
     for (cls, _encoder, decoder) in _adapters:
         if _fullName(cls) == adapterName:  # It must be exact equality check, not `isinstance()`; the idea is to find the adapter that encoded this data, no more, no less
-            assert decoder, decoder  # ToDo: Remove!
-            if len(tuple(p for p in signature(decoder).parameters.values() if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD))) > 1:
+            if len([p for p in signature(decoder).parameters.values() if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]) > 1:
                 # If decoder accepts more than one argument, pass `fullName` as a second argument to give decoder a chance to reconstruct object precisely
                 return await decoder(value, fullName) if iscoroutinefunction(decoder) else decoder(value, fullName)  # type: ignore[call-arg]
             return await decoder(value) if iscoroutinefunction(decoder) else decoder(value)  # type: ignore[call-arg]
@@ -700,7 +700,7 @@ else:  ##  MAIN THREAD
         raises an exception.
         """
         if not workerName:
-            if not (names := tuple(element.getAttribute('name') for element in page.find('script[type="py"][worker][name]'))):
+            if not (names := [element.getAttribute('name') for element in page.find('script[type="py"][worker][name]')]):
                 _error("Could not find any named workers in DOM")
             if len(names) > 1:
                 _error(f"Found the following named workers in DOM: ({', '.join(names)}), which one to connect to?..")
