@@ -5,7 +5,7 @@
 #
 from asyncio import gather
 from collections.abc import Coroutine, Buffer, Callable, Iterable, Iterator, Mapping, Sequence
-from functools import wraps
+from functools import partial, wraps
 from importlib import import_module
 from inspect import isclass, iscoroutinefunction, signature
 from itertools import chain
@@ -538,7 +538,9 @@ if RUNNING_IN_WORKER:  ##
     @typechecked  # Public API
     async def anyCall(funcName: str, *args: object, **kwargs: object) -> object:
         if not (func := globals().get(funcName)):
-            _error(f"Function {funcName} is not found in the worker")
+            _error(f"Function '{funcName}()' is not found in the worker")
+        if not callable(func):
+            _error(f"Variable '{funcName}' in the worker is not callable: {type(func)}")
         return await func(*args, **kwargs) if iscoroutinefunction(func) else func(*args, **kwargs)
 
     @_workerSerialized
@@ -702,6 +704,22 @@ else:  ##  MAIN THREAD
 
         return _mainLoggedWrapper
 
+    @typechecked
+    def _mainWrap[T = object](func: JsProxy, looksLike: _CallableOrCoroutine[T] | str) -> _CoroutineFunction[T]:  # pylint: disable=redefined-outer-name
+        """Wraps an exported function with all the necessary decorators."""
+        return _mainLogged(_mainSerialized(func, looksLike))
+
+    @typechecked
+    class _AnyCall:
+        def __init__(self, wrappedAnyCallFunc: _CoroutineFunction) -> None:
+            self.call = wrappedAnyCallFunc
+
+        def __call__(self, funcName: str, *args: object, **kwargs: object) -> _Coroutine:
+            return self.call(funcName, *args, **kwargs)
+
+        def __getattr__(self, funcName: str) -> _CoroutineFunction:
+            return partial(self.call, funcName)
+
     @typechecked  # Public API
     async def connectToWorker(workerName: str | None = None) -> Worker:
         """
@@ -752,7 +770,8 @@ else:  ##  MAIN THREAD
             assert funcName != '_connectFromMain'
             if not (func := getattr(worker, funcName, None)):
                 _error(f"Function {funcName} is not exported from the worker")
-            setattr(ret, funcName, _mainLogged(_mainSerialized(func, funcName)))
+            wrappedFunc = _mainWrap(func, funcName)
+            setattr(ret, funcName, _AnyCall(wrappedFunc) if funcName == 'anyCall' else wrappedFunc)
 
         _log("Connected to the worker")
         return ret
