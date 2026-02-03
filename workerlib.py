@@ -545,7 +545,11 @@ if RUNNING_IN_WORKER:  ##
                 target[name] = obj
 
     @typechecked  # Public API
-    async def anyCall(funcName: str, *args: object, **kwargs: object) -> object:
+    async def anyCall(funcNameAndArgs: Mapping[str, object]) -> object:
+        (funcName, args, kwargs) = (funcNameAndArgs[x] for x in ('funcName', 'args', 'kwargs'))  # ToDo: Make constants?
+        assert isinstance(funcName, str)
+        assert isinstance(args, Sequence)
+        assert isinstance(kwargs, Mapping)
         if not (func := globals().get(funcName)):
             _error(f"Function '{funcName}()' is not found in the worker")
         if not callable(func):
@@ -688,7 +692,7 @@ else:  ##  MAIN THREAD
             return wraps(looksLike)(_mainSerializedWrapper)
         ret: _CoroutineFunction[T] = wraps(cast(_CoroutineFunction[T], func))(_mainSerializedWrapper)
         assert isinstance(looksLike, str)
-        ret.__name__ = looksLike
+        ret.__qualname__ = ret.__name__ = looksLike
         return ret
 
     @typechecked
@@ -725,14 +729,15 @@ else:  ##  MAIN THREAD
 
     @typechecked
     class _AnyCall:
-        def __init__(self, wrappedAnyCallFunc: _CoroutineFunction) -> None:
-            self.call = wrappedAnyCallFunc
+        def __init__(self, wrappedAnyCallCoroutine: _CoroutineFunction) -> None:
+            self.anyCallCoroutine = wrappedAnyCallCoroutine
 
-        def __call__(self, funcName: str, *args: object, **kwargs: object) -> _Coroutine:
-            return self.call(funcName, *args, **kwargs)
+        async def __call__(self, funcName: str, *args: object, **kwargs: object) -> object:
+            funcNameAndArgs = {'funcName': funcName, 'args': args, 'kwargs': kwargs}
+            return await self.anyCallCoroutine(funcNameAndArgs)
 
         def __getattr__(self, funcName: str) -> _CoroutineFunction:
-            return partial(self.call, funcName)
+            return partial(self.__call__, funcName)
 
     @typechecked  # Public API
     async def connectToWorker(workerName: str | None = None) -> Worker:
