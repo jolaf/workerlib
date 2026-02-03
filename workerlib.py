@@ -3,7 +3,7 @@
 #
 # Tested on PyScript 26.1.1 / Pyodide 0.29.1 / Python 3.13.2
 #
-from asyncio import gather
+from asyncio import create_task, gather
 from collections.abc import Coroutine, Buffer, Callable, Iterable, Iterator, Mapping, Sequence
 from functools import partial, wraps
 from importlib import import_module
@@ -616,7 +616,7 @@ if RUNNING_IN_WORKER:  ##
         _log("Started worker, providing functions:", ', '.join(name for name in exportNamesTuple if name != _connectFromMain.__name__))  # ToDo: Print "started" once, prevent export() calls after connection
 
     @typechecked
-    def _autoExport() -> None:
+    async def _autoExport() -> None:
         """
         Gets called automatically if this module itself is loaded as a worker.
 
@@ -646,8 +646,7 @@ if RUNNING_IN_WORKER:  ##
         del export
         __all__ = ()
         __export__ = ()
-        _autoExport()  # ToDo: call this after timeout so that things from this module could be imported by the modules being imported
-        assert __export__, __export__
+        create_task(_autoExport())  # Make sure this module gets fully loaded before `_autoExport()` is called – to avoid circular import errors if anything being imported tries to import something from `workerlib`, e.g., `anyCall`
     else:
         # If a user is importing this module into a worker, they MUST call `export()` explicitly
         del _autoExport
