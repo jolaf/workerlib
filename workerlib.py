@@ -224,16 +224,17 @@ def _importFromModule(module: str | ModuleType, qualNames: str | Iterable[str]) 
         module = _importModule(module)
     if isinstance(qualNames, str):
         qualNames = (qualNames,)
-    if printNames := [n for n in qualNames if n not in _BUILTIN_SPECIALS]:
+    if printNames := [n for n in qualNames if '.' in n or (n not in _BUILTIN_SPECIALS and (module.__name__ == _BUILTINS or n not in _builtins))]:
         _log(f"Importing from module {'workerlib' if module.__name__ == __name__ else module.__name__}: {', '.join(printNames)}")
     for qualName in qualNames:
         assert isinstance(qualName, str)
-        if (y := _BUILTIN_SPECIALS.get(qualName, _DEFAULT)) != _DEFAULT:
-            yield y
-            continue
-        if (y := _builtins.get(qualName, _DEFAULT)) != _DEFAULT:
-            yield y
-            continue
+        if '.' not in qualName:
+            if (y := _BUILTIN_SPECIALS.get(qualName, _DEFAULT)) != _DEFAULT:
+                yield y
+                continue
+            if (y := _builtins.get(qualName, _DEFAULT)) != _DEFAULT:
+                yield y
+                continue
         obj = module
         for name in qualName.split('.'):
             obj = getattr(obj, name)
