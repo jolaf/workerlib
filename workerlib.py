@@ -142,6 +142,9 @@ _BUILTIN_SPECIALS: Final[Mapping[str, type[object] | str | None]] = {
 _CONNECT_REQUEST: Final[str] = _WORKERLIB_PREFIX + 'connectRequest'
 _CONNECT_RESPONSE: Final[str] = _WORKERLIB_PREFIX + 'connectResponse'
 
+_TAG_ATTR = 'tag'
+_NAME_ATTR = 'name'
+
 _adapters: Sequence[_Adapter] = ()
 
 __export__: Sequence[str]
@@ -269,7 +272,7 @@ def _adaptersFromSequence(module: ModuleType, names: Sequence[str] | Sequence[Se
         for subSequence in names:
             yield from _adaptersFromSequence(module, subSequence, allowSubSequences = False)
     else:
-        _error("Adapter specification should be either [strings] or [[strings], …], third level of inclusion is not needed")
+        _error("Adapter specification should be either [strings] or [[strings], …], the third level of inclusion is not needed")
 
 @typechecked
 def _importAdapters() -> None:  # ToDo: Create _Adapter class
@@ -297,7 +300,7 @@ async def _to_js(obj: object) -> object:
     to produce a transferable result.
     """
     for (cls, encoder, _decoder) in _adapters:  # Trying adapters that are more specific than transferable types, e.g., `Enums`s
-        if issubclass(cls, _Transferable) and isinstance(obj, cls):
+        if issubclass(cls, _Transferable) and isinstance(obj, cls):  # ToDo: Make two lists (?) of adapters, to check before and after _Transferable
             if encoder:  # noqa: SIM108
                 value = await encoder(obj) if iscoroutinefunction(encoder) else encoder(obj)
             else:
@@ -310,7 +313,7 @@ async def _to_js(obj: object) -> object:
     if isinstance(obj, _BasicTypes):
         return obj  # Save it from being converted to `tuple` as an `Iterable`
     if isinstance(obj, Mapping):  # Should be checked before `Iterable`, as `Mapping` is an `Iterable` too
-        return {k: v for (k, v) in await gather(*(gather(*(_to_js(x) for x in k_v)) for k_v in obj.items()))}  # pylint: disable=unnecessary-comprehension
+        return {k: v for (k, v) in await gather(*(gather(*(_to_js(x) for x in k_v)) for k_v in obj.items()))}  # ToDo: make functions for these  # pylint: disable=unnecessary-comprehension
     if isinstance(obj, Iterable):
         return await gather(*(_to_js(v) for v in obj))
     for (cls, encoder, _decoder) in _adapters:  # Trying adapters that are less specific than transferable types – i.e., `object`
@@ -355,10 +358,10 @@ async def _to_py(obj: object) -> object:
     fullName = cast(str, obj[_ADAPTER_FULLNAME])
     value = obj[_ADAPTER_VALUE]
 
-    for (cls, _encoder, decoder) in _adapters:
+    for (cls, _encoder, decoder) in _adapters:  # ToDo: Make `_adapters` into a dict to fasten this search
         if _fullName(cls) == adapterName:  # It must be exact equality check, not `isinstance()`; the idea is to find the adapter that encoded this data, no more, no less
             if len([p for p in signature(decoder).parameters.values() if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]) > 1:
-                # If decoder accepts more than one argument, pass `fullName` as a second argument to give decoder a chance to reconstruct object precisely
+                # If the decoder accepts more than one argument, pass `fullName` as a second argument to give the decoder a chance to reconstruct an object precisely
                 return await decoder(value, fullName) if iscoroutinefunction(decoder) else decoder(value, fullName)  # type: ignore[call-arg]
             return await decoder(value) if iscoroutinefunction(decoder) else decoder(value)  # type: ignore[call-arg]
     # The data EXPLICITLY requests an adapter, so the unconverted object is definitely not expected
@@ -433,7 +436,7 @@ if RUNNING_IN_WORKER:  ##
 
     _NAME = "worker"
 
-    _log("Starting worker, sync_main_only =", config.get('sync_main_only', False))
+    _log("Starting worker")
 
     for info in diagnostics:
         _log(info)
@@ -533,7 +536,7 @@ if RUNNING_IN_WORKER:  ##
 
     @_workerSerialized
     @typechecked
-    def _connectFromMain(request: str, name: str) -> Sequence[str]:
+    def _connectFromMain(request: str, name: str, attributes: Mapping[str, str]) -> Sequence[str]:
         """
         Service function; is exported to be called by `connectToWorker()`
         in the main thread right after a connection to this worker is made.
@@ -546,9 +549,12 @@ if RUNNING_IN_WORKER:  ##
         they can be wrapped properly in the main thread.
         """
         if request == _CONNECT_REQUEST:
-            _log(f'Connected to the main thread, assigned name "{name}", ready for requests')
+            _log(f'Assigned name "{name}"')
             global _NAME  # noqa: PLW0603  # pylint: disable=global-statement
             _NAME = name
+            config['attributes'] = attributes
+            _log("Tag:", attributes.get(_TAG_ATTR, "''"))
+            _log(f"Connected to the main thread, sync_main_only = {config.get('sync_main_only', False)}, ready for requests")
             assert __export__, __export__
             return tuple(chain((_CONNECT_RESPONSE,), (funcName for funcName in __export__ if funcName != _connectFromMain.__name__)))
         _error(f"Connection to main thread is misconfigured, can't continue: {type(request)}({request!r})")
@@ -699,12 +705,28 @@ else:  ##  MAIN THREAD
         If no such a tag is found, or more than one is found,
         raises an exception.
         """
-        if not workerName:
-            if not (names := [element.getAttribute('name') for element in page.find('script[type="py"][worker][name]')]):
+        if workerName:
+            elements = page.find(f'script[type="py"][worker][name={workerName}]')
+            element = elements[0] if elements else None
+        else:
+            if not (elements := page.find('script[type="py"][worker][name]')):
                 _error("Could not find any named workers in DOM")
-            if len(names) > 1:
-                _error(f"Found the following named workers in DOM: ({', '.join(names)}), which one to connect to?..")
-            workerName = names[0]
+            if len(elements) > 1:
+                _error(f"Found the following named workers in DOM: {', '.join([element.getAttribute(_NAME_ATTR) for element in elements])}; which one to connect to?..")
+            element = elements[0]
+
+        attributes: dict[str, str] = {}
+        if element:
+            attributes[_TAG_ATTR] = element.outerHTML
+
+            for attributeName in element.getAttributeNames():
+                value = element.getAttribute(attributeName)
+                assert isinstance(value, str), type(value)
+                attributes[attributeName] = value
+
+        if not workerName:
+            workerName = attributes[_NAME_ATTR]
+        assert workerName
 
         _importAdapters()
 
@@ -713,7 +735,7 @@ else:  ##  MAIN THREAD
         worker: JsProxy = await workers[workerName]
         # ^^ WRAPPED CALL ^^
         _log("Got the worker, connecting")
-        data: Sequence[str] = await _mainSerialized(worker._connectFromMain, '_connectFromMain')(_CONNECT_REQUEST, workerName)  # type: ignore[attr-defined]  # noqa: SLF001  # pylint: disable=protected-access
+        data: Sequence[str] = await _mainSerialized(worker._connectFromMain, '_connectFromMain')(_CONNECT_REQUEST, workerName, attributes)  # type: ignore[attr-defined]  # noqa: SLF001  # pylint: disable=protected-access
         if not data or data[0] != _CONNECT_RESPONSE:
             _error(f"Connection to worker is misconfigured, can't continue: {type(data)}: {data!r}")
 
