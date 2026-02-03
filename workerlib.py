@@ -15,7 +15,7 @@ from re import search
 from sys import flags, modules, platform, version as _pythonVersion, _getframe
 from time import time
 from types import ModuleType
-from typing import cast, Final, NoReturn, TypeAlias
+from typing import cast, Final, NoReturn, ReadOnly, Required, TypeAlias, TypedDict
 
 from pyscript import config, RUNNING_IN_WORKER  # Yes, this module is indeed PyScript-only and won't work outside the browser
 
@@ -28,6 +28,7 @@ type _CoroutineFunction[T = object] = Callable[..., _Coroutine[T]]
 type _CallableOrCoroutine[T = object] = Callable[..., T | _Coroutine[T]]
 type _Time = float | int
 type _Timed[T] = Mapping[str, str | _Time | T]
+
 _BasicTypes = Real | str | Buffer | None  # Using `type` breaks `isinstance()`
 _Transferable: TypeAlias = _BasicTypes | Iterable  # type: ignore[type-arg]  # Using `type` or adding `[Any]` breaks `isinstance()`  # noqa: UP040
 
@@ -38,6 +39,11 @@ type _Adapter[T = object] = tuple[
     Callable[[object], T | _Coroutine[T]]
         | Callable[[object, str], T | _Coroutine[T]]
 ]
+
+class _AnyCallArg(TypedDict, total = False):
+    funcName: Required[ReadOnly[str]]
+    args: ReadOnly[Sequence[object]]
+    kwargs: ReadOnly[Mapping[str, object]]
 
 try:  # Getting CPU count
     from os import process_cpu_count
@@ -546,11 +552,10 @@ if RUNNING_IN_WORKER:  ##
                 target[name] = obj
 
     @typechecked  # Public API
-    async def anyCall(funcNameAndArgs: Mapping[str, object]) -> object:
-        (funcName, args, kwargs) = (funcNameAndArgs[x] for x in ('funcName', 'args', 'kwargs'))  # ToDo: Make constants?
-        assert isinstance(funcName, str)
-        assert isinstance(args, Sequence)
-        assert isinstance(kwargs, Mapping)
+    async def anyCall(funcNameAndArgs: _AnyCallArg) -> object:
+        funcName = funcNameAndArgs['funcName']
+        args = funcNameAndArgs.get('args', ())
+        kwargs = funcNameAndArgs.get('kwargs', {})
         if not (func := globals().get(funcName)):
             _error(f"Function '{funcName}()' is not found in the worker")
         if not callable(func):
@@ -734,7 +739,7 @@ else:  ##  MAIN THREAD
             self.anyCallCoroutine = wrappedAnyCallCoroutine
 
         async def __call__(self, funcName: str, *args: object, **kwargs: object) -> object:
-            funcNameAndArgs = {'funcName': funcName, 'args': args, 'kwargs': kwargs}
+            funcNameAndArgs = _AnyCallArg(funcName = funcName, args = args, kwargs = kwargs)
             return await self.anyCallCoroutine(funcNameAndArgs)
 
         def __getattr__(self, funcName: str) -> _CoroutineFunction:
