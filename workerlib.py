@@ -12,7 +12,7 @@ from itertools import chain
 from numbers import Real
 from pickle import dumps as pickleDump, loads as pickleLoad
 from re import search
-from sys import flags, platform, version as _pythonVersion, _getframe
+from sys import flags, modules, platform, version as _pythonVersion, _getframe
 from time import time
 from types import ModuleType
 from typing import cast, Final, NoReturn, TypeAlias
@@ -109,18 +109,13 @@ except ImportError:
     def typechecked[T](func: _CallableOrCoroutine[T]) -> _CallableOrCoroutine[T]:  # type: ignore[no-redef]  # pylint: disable=redefined-outer-name
         return func
 
-global __builtins__  # noqa: PLW0603  # pylint: disable=global-at-module-level
-if not isinstance(__builtins__, ModuleType):  # Workaround for https://github.com/pyscript/pyscript/issues/2446, https://github.com/pyodide/pyodide/issues/6096  # pylint: disable=used-before-assignment
-    from sys import modules  # type: ignore[unreachable]  # pylint: disable=ungrouped-imports
-    __builtins__ = modules['builtins']  # pylint: disable=redefined-builtin
-assert isinstance(__builtins__, ModuleType)
-
 _NAME = ''
 
 __EXPORT__: Final[str] = '__export__'
 
 _ADAPTERS_SECTION: Final[str] = 'adapters'
 _EXPORTS_SECTION: Final[str] = 'exports'
+_IMPORTS_SECTION: Final[str] = 'imports'
 
 _WORKERLIB_PREFIX: Final[str] = '_workerlib_'
 _ADAPTER_MARKER: Final[str] = _WORKERLIB_PREFIX + 'adapter'  # Used to differential adapter data from other mappings
@@ -128,12 +123,16 @@ _ADAPTER_VALUE: Final[str] = 'value'
 _ADAPTER_FULLNAME: Final[str] = 'className'
 _START_TIME: Final[str] = 'startTime'
 _START_TIME_ADAPTER: Final[str] = _WORKERLIB_PREFIX + _START_TIME  # Used to differentiate start time data from other adapters
+_DEFAULT = '__default'
 _PICKLE = "pickle"
 
-_BUILTINS_NAMES: Final[Sequence[str | None]] = ('builtins', '', 'None', None)
+_BUILTINS = 'builtins'
+_BUILTINS_NAMES: Final[Sequence[str | None]] = (_BUILTINS, '', 'None', None)
+_builtins = modules[_BUILTINS].__dict__
 
 _BUILTIN_SPECIALS: Final[Mapping[str, type[object] | str | None]] = {
     '': None,
+    'None': None,
     'Any': object,
     'object': object,
     _PICKLE: _PICKLE,
@@ -171,7 +170,7 @@ def _error(message: str) -> NoReturn:
     Logs an error message to the console and stops further operations
     by raising a `RuntimeError`.
     """
-    raise RuntimeError(f"[{_NAME}] {message}")
+    raise RuntimeError(message)
 
 @typechecked  # Public API
 def elapsedTime(startTime: _Time) -> str:  # noqa: PYI041  # beartype is right enforcing this: https://github.com/beartype/beartype/issues/66
@@ -189,7 +188,7 @@ def _fullName(obj: object) -> str:
         obj = type(obj)
     assert hasattr(obj, '__qualname__'), obj
     qualName: str = obj.__qualname__
-    if (moduleName := obj.__module__) in ('', 'builtins'):  # pylint: disable=use-set-for-membership
+    if (moduleName := obj.__module__) in _BUILTINS_NAMES:
         return qualName
     return f"{moduleName}.{qualName}"
 
@@ -201,12 +200,14 @@ def _importModule(moduleName: str | None) -> ModuleType:
     If the module has already been imported, returns it.
     """
     if moduleName in _BUILTINS_NAMES:
-        return __builtins__
+        return modules[_BUILTINS]
+    if moduleName in (__name__, 'workerlib'):
+        return modules[__name__]
     assert moduleName
-    if not (module := globals().get(moduleName)):
-        _log("Importing module", moduleName)
-        globals()[moduleName] = module = import_module(moduleName)
-    return module
+    if module := modules.get(moduleName):
+        return module
+    _log("Importing module", moduleName)
+    return import_module(moduleName)
 
 @typechecked
 def _importFromModule(module: str | ModuleType, qualNames: str | Iterable[str]) -> Iterator[object]:
@@ -219,24 +220,24 @@ def _importFromModule(module: str | ModuleType, qualNames: str | Iterable[str]) 
 
     Returns an `Iterator` of imported objects.
     """
-    if isinstance(module, str):
+    if isinstance(module, str):  # ToDo: Find a way to import from '.' – user's module; see `target` in `export()`
         module = _importModule(module)
     if isinstance(qualNames, str):
         qualNames = (qualNames,)
-    if printNames := [n for n in qualNames if n not in _BUILTIN_SPECIALS and n not in __builtins__.__dict__]:
-        _log(f"Importing from module {module.__name__}: {', '.join(printNames)}")
+    if printNames := [n for n in qualNames if n not in _BUILTIN_SPECIALS]:
+        _log(f"Importing from module {'workerlib' if module.__name__ == __name__ else module.__name__}: {', '.join(printNames)}")
     for qualName in qualNames:
         assert isinstance(qualName, str)
-        if (y := _BUILTIN_SPECIALS.get(qualName, '__default')) != '__default':
+        if (y := _BUILTIN_SPECIALS.get(qualName, _DEFAULT)) != _DEFAULT:
             yield y
             continue
-        try:
-            yield __builtins__.__dict__[qualName]
-        except KeyError:
-            obj = module
-            for name in qualName.split('.'):
-                obj = getattr(obj, name)
-            yield obj
+        if (y := _builtins.get(qualName, _DEFAULT)) != _DEFAULT:
+            yield y
+            continue
+        obj = module
+        for name in qualName.split('.'):
+            obj = getattr(obj, name)
+        yield obj
 
 @typechecked
 def _adaptersFromSequence(module: ModuleType, names: Sequence[str] | Sequence[Sequence[str]], allowSubSequences: bool = True) -> Iterator[_Adapter]:
@@ -535,6 +536,14 @@ if RUNNING_IN_WORKER:  ##
         """Wraps a function to be exported with all the necessary decorators."""
         return _workerSerialized(_workerLogged(typechecked(func)))
 
+    @typechecked
+    def _imports(target: dict[str, object] | None = None) -> None:
+        if target is None:
+            target = globals()
+        for (moduleName, names) in config.get(_IMPORTS_SECTION, {}).items():
+            for (name, obj) in zip(names, _importFromModule(moduleName, names), strict = True):
+                target[name] = obj
+
     @typechecked  # Public API
     async def anyCall(funcName: str, *args: object, **kwargs: object) -> object:
         if not (func := globals().get(funcName)):
@@ -578,6 +587,10 @@ if RUNNING_IN_WORKER:  ##
         into the `__export__` list of the calling module.
         """
         target = _getframe(1).f_globals  # globals of the calling module
+
+        _imports(target)  # ToDo: Call it only once!!
+        _importAdapters()  # Importing adapters late so that potential errors would not interrupt startup too early
+
         target[_connectFromMain.__name__] = _connectFromMain
         exportNames: list[str] = []
         if _connectFromMain.__name__ not in target.get(__EXPORT__, ()):
@@ -590,8 +603,7 @@ if RUNNING_IN_WORKER:  ##
         exportNamesTuple = tuple(chain(target.get(__EXPORT__, ()), exportNames))
         target[__EXPORT__] = exportNamesTuple
         globals()[__EXPORT__] = exportNamesTuple  # This is only needed to make `_connectFromMain()` code simple and universal for both `export()` and `_autoExport()`
-        _importAdapters()  # Importing adapters late so that potential errors would not interrupt startup too early
-        _log("Started worker, providing functions:", ', '.join(name for name in exportNamesTuple if name != _connectFromMain.__name__))
+        _log("Started worker, providing functions:", ', '.join(name for name in exportNamesTuple if name != _connectFromMain.__name__))  # ToDo: Print "started" once, prevent export() calls after connection
 
     @typechecked
     def _autoExport() -> None:
@@ -600,6 +612,9 @@ if RUNNING_IN_WORKER:  ##
 
         Wraps and exports functions listed in the config.
         """
+        _imports()
+        _importAdapters()
+
         exportNames = [_connectFromMain.__name__,]
         target = globals()
 
@@ -614,7 +629,6 @@ if RUNNING_IN_WORKER:  ##
             _log("WARNING: no functions found to export, check `[exports]` section in the config")
 
         target[__EXPORT__] = tuple(exportNames)
-        _importAdapters()
         _log("Started worker, providing functions:", ', '.join(name for name in exportNames if name != _connectFromMain.__name__))
 
     if __name__ == '__main__':
@@ -622,7 +636,7 @@ if RUNNING_IN_WORKER:  ##
         del export
         __all__ = ()
         __export__ = ()
-        _autoExport()
+        _autoExport()  # ToDo: call this after timeout so that things from this module could be imported by the modules being imported
         assert __export__, __export__
     else:
         # If a user is importing this module into a worker, they MUST call `export()` explicitly
