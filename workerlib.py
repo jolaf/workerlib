@@ -443,7 +443,7 @@ if RUNNING_IN_WORKER:  ##
         _log(info)
 
     @typechecked
-    def _workerSerialized[T](func: _CallableOrCoroutine[T]) -> _CoroutineFunction[object]:  # pylint: disable=redefined-outer-name
+    def _workerSerialized[T = object](func: _CallableOrCoroutine[T]) -> _CoroutineFunction:  # pylint: disable=redefined-outer-name
         """
         Used to wrap exported functions.
 
@@ -491,7 +491,7 @@ if RUNNING_IN_WORKER:  ##
         return _workerSerializedWrapper
 
     @typechecked
-    def _workerLogged[T](func: _CallableOrCoroutine[T]) -> _CoroutineFunction[_Timed[T]]:  # pylint: disable=redefined-outer-name
+    def _workerLogged[T = object](func: _CallableOrCoroutine[T]) -> _CoroutineFunction[_Timed[T]]:  # pylint: disable=redefined-outer-name
         """
         Used to wrap exported functions.
 
@@ -531,9 +531,9 @@ if RUNNING_IN_WORKER:  ##
         return _workerLoggedWrapper
 
     @typechecked
-    def _workerWrap[T](func: _CallableOrCoroutine[T]) -> _CoroutineFunction[object]:  # pylint: disable=redefined-outer-name
+    def _workerWrap[T = object](func: _CallableOrCoroutine[T]) -> _CoroutineFunction:  # pylint: disable=redefined-outer-name
         """Wraps a function to be exported with all the necessary decorators."""
-        return _workerSerialized(_workerLogged(typechecked(func)))  # type: ignore[arg-type]  # It looks like there's some bug in `mypy` in this matter
+        return _workerSerialized(_workerLogged(typechecked(func)))
 
     @typechecked  # Public API
     async def anyCall(funcName: str, *args: object, **kwargs: object) -> object:
@@ -649,7 +649,7 @@ else:  ##  MAIN THREAD
             self.worker = worker
 
     @typechecked
-    def _mainSerialized[T](func: JsProxy, looksLike: _CallableOrCoroutine[T] | str) -> _CoroutineFunction[T]:  # pylint: disable=redefined-outer-name
+    def _mainSerialized[T = object](func: JsProxy, looksLike: _CallableOrCoroutine[T] | str) -> _CoroutineFunction[T]:  # pylint: disable=redefined-outer-name
         """
         Used to wrap worker functions.
 
@@ -676,7 +676,7 @@ else:  ##  MAIN THREAD
         return ret
 
     @typechecked
-    def _mainLogged[T](func: _CoroutineFunction[T]) -> _CoroutineFunction[T]:  # pylint: disable=redefined-outer-name
+    def _mainLogged[T = object](func: _CoroutineFunction[T]) -> _CoroutineFunction[T]:  # pylint: disable=redefined-outer-name
         """
         Used to wrap worker functions.
 
@@ -743,7 +743,7 @@ else:  ##  MAIN THREAD
         worker = await workers[workerName]
         # ^^ WRAPPED CALL ^^
         _log("Got the worker, connecting")
-        data: Sequence[str] = await _mainSerialized(worker._connectFromMain, '_connectFromMain')(_CONNECT_REQUEST, workerName, attributes)  # noqa: SLF001  # pylint: disable=protected-access
+        data = cast(Sequence[str], await _mainSerialized(worker._connectFromMain, '_connectFromMain')(_CONNECT_REQUEST, workerName, attributes))  # noqa: SLF001  # pylint: disable=protected-access
         if not data or data[0] != _CONNECT_RESPONSE:
             _error(f"Connection to worker is misconfigured, can't continue: {type(data)}: {data!r}")
 
