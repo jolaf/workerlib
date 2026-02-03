@@ -19,7 +19,7 @@ from typing import cast, Final, NoReturn, ReadOnly, Required, TypeAlias, TypedDi
 
 from pyscript import config, RUNNING_IN_WORKER  # Yes, this module is indeed PyScript-only and won't work outside the browser
 
-# We name all internal stuff starting with `_` underscore to minimize the chance of a conflict with exported user functions
+# We name all internal global stuff starting with `_` underscore to minimize the chance of a conflict with exported user functions
 type _Args[T = object] = tuple[T, ...]
 type _Kwargs[T = object] = dict[str, T]
 type _ArgsKwargs[AT = object, KT = object] = tuple[_Args[AT], _Kwargs[AT]]
@@ -78,7 +78,7 @@ try:
     from pyscript.web import page  # This would break in a worker if CORS is not configured  # pylint: disable=import-error, no-name-in-module
 except AttributeError as ex:
     if RUNNING_IN_WORKER:
-        page = None  # type: ignore[assignment]  # This is only needed for PyScript version detection and getting worker name, not mission-critical
+        page = None  # type: ignore[assignment]  # This would only inhibit PyScript version detection, not mission-critical
     else:  # This shouldn't ever happen
         raise
 
@@ -462,9 +462,9 @@ if RUNNING_IN_WORKER:  ##
         """
         @wraps(func)
         @typechecked
-        async def _workerSerializedWrapper(*args: object, **kwargs: object) -> object:
+        async def workerSerializedWrapper(*args: object, **kwargs: object) -> object:
             @typechecked
-            def _extractKwargs(*args: object) -> _ArgsKwargs:
+            def extractKwargs(*args: object) -> _ArgsKwargs:
                 """
                 If the last of `args` is a `Mapping`, check whether it is possible
                 for that to be the `kwargs` for the `func`. If so, extract it.
@@ -490,13 +490,13 @@ if RUNNING_IN_WORKER:  ##
 
             assert not kwargs  # `kwargs` get passed to workers as the last of `args`, of type `dict`
             args = cast(_Args, await _to_py(args))
-            (args, kwargs) = _extractKwargs(*args)  # If `func` accepts keyword arguments, extract them from the last of `args`
+            (args, kwargs) = extractKwargs(*args)  # If `func` accepts keyword arguments, extract them from the last of `args`
             # vv WRAPPED CALL vv
             ret = await func(*args, **kwargs) if iscoroutinefunction(func) else func(*args, **kwargs)
             # ^^ WRAPPED CALL ^^
             return await _to_js(ret)
 
-        return _workerSerializedWrapper
+        return workerSerializedWrapper
 
     @typechecked
     def _workerLogged[T = object](func: _CallableOrCoroutine[T]) -> _CoroutineFunction[_Timed[T]]:  # pylint: disable=redefined-outer-name
@@ -511,7 +511,7 @@ if RUNNING_IN_WORKER:  ##
         """
         @wraps(func)
         @typechecked
-        async def _workerLoggedWrapper(*args: object, **kwargs: object) -> _Timed[T]:
+        async def workerLoggedWrapper(*args: object, **kwargs: object) -> _Timed[T]:
             try:
                 elapsed = elapsedTime(cast(_Time, argStartTime)) if (argStartTime := kwargs.pop(_START_TIME_ADAPTER, None)) else ''
                 callStartTime = time()
@@ -536,7 +536,7 @@ if RUNNING_IN_WORKER:  ##
                 _log(f"Exception at {func.__name__}: {ex}")
                 raise
 
-        return _workerLoggedWrapper
+        return workerLoggedWrapper
 
     @typechecked
     def _workerWrap[T = object](func: _CallableOrCoroutine[T]) -> _CoroutineFunction:  # pylint: disable=redefined-outer-name
@@ -685,7 +685,7 @@ else:  ##  MAIN THREAD
         Coordinates with `@_workerSerialized`.
         """
         @typechecked
-        async def _mainSerializedWrapper(*args: object, **kwargs: object) -> T:
+        async def mainSerializedWrapper(*args: object, **kwargs: object) -> T:
             assert isinstance(func, JsProxy), type(func)
             args = await gather(*(_to_js(arg) for arg in args))  # type: ignore[assignment]
             kwargs = dict(zip(kwargs.keys(), await gather(*(_to_js(v) for v in kwargs.values())), strict = True))
@@ -695,8 +695,8 @@ else:  ##  MAIN THREAD
             return cast(T, await _to_py(ret))
 
         if callable(looksLike):
-            return wraps(looksLike)(_mainSerializedWrapper)
-        ret: _CoroutineFunction[T] = wraps(cast(_CoroutineFunction[T], func))(_mainSerializedWrapper)
+            return wraps(looksLike)(mainSerializedWrapper)
+        ret: _CoroutineFunction[T] = wraps(cast(_CoroutineFunction[T], func))(mainSerializedWrapper)
         assert isinstance(looksLike, str)
         ret.__qualname__ = ret.__name__ = looksLike
         return ret
@@ -714,7 +714,7 @@ else:  ##  MAIN THREAD
         """
         @wraps(func)
         @typechecked
-        async def _mainLoggedWrapper(*args: object, **kwargs: object) -> T:
+        async def mainLoggedWrapper(*args: object, **kwargs: object) -> T:
             kwargs[_START_TIME_ADAPTER] = time()  # Starting calculating time it would take to transfer the function arguments to the worker
             # vv WRAPPED CALL vv
             ret: T | _Timed[T] = await func(*args, **kwargs)
@@ -726,7 +726,7 @@ else:  ##  MAIN THREAD
                 _log(f"Transferred return value {elapsedTime(retStartTime)} from {func.__name__}()")
             return cast(T, ret)
 
-        return _mainLoggedWrapper
+        return mainLoggedWrapper
 
     @typechecked
     def _mainWrap[T = object](func: JsProxy, looksLike: _CallableOrCoroutine[T] | str) -> _CoroutineFunction[T]:  # pylint: disable=redefined-outer-name
