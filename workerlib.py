@@ -151,6 +151,7 @@ __export__: Sequence[str]
 
 __all__: Sequence[str] = (  # This is for static checkers, in runtime it will be reduced depending on context
     'Worker',
+    'anyCall',
     'connectToWorker',
     'diagnostics',
     'elapsedTime',
@@ -534,6 +535,12 @@ if RUNNING_IN_WORKER:  ##
         """Wraps a function to be exported with all the necessary decorators."""
         return _workerSerialized(_workerLogged(typechecked(func)))  # type: ignore[arg-type]  # It looks like there's some bug in `mypy` in this matter
 
+    @typechecked  # Public API
+    async def anyCall(funcName: str, *args: object, **kwargs: object) -> object:
+        if not (func := globals().get(funcName)):
+            _error(f"Function {funcName} is not found in the worker")
+        return await func(*args, **kwargs) if iscoroutinefunction(func) else func(*args, **kwargs)
+
     @_workerSerialized
     @typechecked
     def _connectFromMain(request: str, name: str, attributes: Mapping[str, str]) -> Sequence[str]:
@@ -619,6 +626,7 @@ if RUNNING_IN_WORKER:  ##
         # If a user is importing this module into a worker, they MUST call `export()` explicitly
         del _autoExport
         __all__ = (
+            'anyCall',
             'diagnostics',
             'elapsedTime',
             'export',
