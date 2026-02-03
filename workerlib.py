@@ -740,10 +740,10 @@ else:  ##  MAIN THREAD
 
         _log(f'Looking for a worker named "{workerName}"')
         # vv WRAPPED CALL vv
-        worker: JsProxy = await workers[workerName]
+        worker = await workers[workerName]
         # ^^ WRAPPED CALL ^^
         _log("Got the worker, connecting")
-        data: Sequence[str] = await _mainSerialized(worker._connectFromMain, '_connectFromMain')(_CONNECT_REQUEST, workerName, attributes)  # type: ignore[attr-defined]  # noqa: SLF001  # pylint: disable=protected-access
+        data: Sequence[str] = await _mainSerialized(worker._connectFromMain, '_connectFromMain')(_CONNECT_REQUEST, workerName, attributes)  # noqa: SLF001  # pylint: disable=protected-access
         if not data or data[0] != _CONNECT_RESPONSE:
             _error(f"Connection to worker is misconfigured, can't continue: {type(data)}: {data!r}")
 
