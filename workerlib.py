@@ -655,6 +655,32 @@ if RUNNING_IN_WORKER:  ##
 
     @typechecked  # Public API
     async def anyCall(funcNameAndArgs: _AnyCallArg) -> object:
+        """
+        Special service function you can export the same way as any other function.
+
+        After this function is exported, you may use it to call any other function
+        in the same worker – just call it like `worker.anyCall.funcName(*args, **kwargs)`.
+        Just one export – and complete access to the whole worker module.
+        You can even call `eval()` this way, if you want.
+
+        So, only export this function if you definitely and completely control
+        the main thread.
+
+        Another benefit of this function is that all the arguments you pass
+        will be passed to a worker as a single argument. If that argument
+        is encoded into a single `memoryview`, it may be much faster than
+        encoding each argument separately, particularly if lists and maps
+        are involved.
+
+        One of the great ways to encode single arbitrary object as `memoryview`
+        is `pickle`. So, this function works the best if you use an adapter
+        like this:
+
+        [adapters]
+        "workerlib" = ["All", "pickle", "pickle"]
+
+        One exported function, one adapter – and everything works very fast.
+        """
         funcName = funcNameAndArgs['funcName']
         args = funcNameAndArgs['args']
         kwargs = funcNameAndArgs['kwargs']
@@ -714,9 +740,11 @@ if RUNNING_IN_WORKER:  ##
             currentFrame = currentframe()
             assert currentFrame
             _targetModule = getmodule(currentFrame.f_back)  # Calling module
+
             assert _targetModule
             _imports(_targetModule)  # Doing imports this late so that potential errors would not interrupt startup too early
             _Adapter.fromConfig()
+
             _targetModule._connectFromMain = _connectFromMain  # type: ignore[attr-defined]  # pylint: disable=protected-access
             _targetModule.__export__ = (_connectFromMain.__name__,)  # type: ignore[attr-defined]
 
@@ -787,18 +815,6 @@ else:  ##  MAIN THREAD
 
     _NAME = "main"
 
-    @typechecked
-    class _AnyCall:
-        def __init__(self, wrappedAnyCallCoroutine: _CoroutineFunction) -> None:
-            self.anyCallCoroutine = wrappedAnyCallCoroutine
-
-        async def __call__(self, funcName: str, *args: object, **kwargs: object) -> object:
-            funcNameAndArgs = _AnyCallArg(funcName = funcName, args = args, kwargs = kwargs)
-            return await self.anyCallCoroutine(funcNameAndArgs)
-
-        def __getattr__(self, funcName: str) -> _CoroutineFunction:
-            return partial(self.__call__, funcName)
-
     @typechecked  # Public API
     class Worker:
         """Stores PyScript `worker` object and decorated functions exported by a worker."""
@@ -862,6 +878,18 @@ else:  ##  MAIN THREAD
     def _mainWrap[T = object](func: JsProxy, looksLike: _CallableOrCoroutine[T] | str) -> _CoroutineFunction[T]:  # pylint: disable=redefined-outer-name
         """Wraps an exported function with all the necessary decorators."""
         return _mainLogged(_mainSerialized(func, looksLike))
+
+    @typechecked
+    class _AnyCall:
+        def __init__(self, wrappedAnyCallCoroutine: _CoroutineFunction) -> None:
+            self.anyCallCoroutine = wrappedAnyCallCoroutine
+
+        async def __call__(self, funcName: str, *args: object, **kwargs: object) -> object:
+            funcNameAndArgs = _AnyCallArg(funcName = funcName, args = args, kwargs = kwargs)
+            return await self.anyCallCoroutine(funcNameAndArgs)
+
+        def __getattr__(self, funcName: str) -> _CoroutineFunction:
+            return partial(self.__call__, funcName)
 
     @typechecked  # Public API
     async def connectToWorker(workerName: str | None = None) -> Worker:  # ToDo: Refactor it somehow to be compatible with other languages
