@@ -7,12 +7,12 @@ from asyncio import create_task, gather
 from collections.abc import Buffer, Callable, Coroutine, Iterable, Iterator, Mapping, Sequence
 from functools import partial, wraps
 from importlib import import_module
-from inspect import isclass, iscoroutinefunction, signature
+from inspect import currentframe, getmodule, isclass, iscoroutinefunction, signature
 from itertools import chain
 from numbers import Real
 from pickle import dumps as pickleDump, loads as pickleLoad
 from re import search
-from sys import flags, modules, platform, version as _pythonVersion, _getframe
+from sys import flags, modules, platform, version as _pythonVersion
 from time import time
 from types import ModuleType
 from typing import cast, ClassVar, Final, NoReturn, ReadOnly, Self, TypeAlias, TypedDict
@@ -525,6 +525,9 @@ if RUNNING_IN_WORKER:  ##
 
     _log("Starting worker")
 
+    _connected = False
+    _targetModule: ModuleType | None = None
+
     for info in diagnostics:
         _log(info)
 
@@ -622,12 +625,16 @@ if RUNNING_IN_WORKER:  ##
         return _workerSerialized(_workerLogged(typechecked(func)))
 
     @typechecked
-    def _imports(target: dict[str, object] | None = None) -> None:
-        if target is None:
-            target = globals()
-        for (moduleName, names) in config.get(_IMPORTS_SECTION, {}).items():
+    def _importSection(section: str) -> Iterator[tuple[str, object]]:
+        for (moduleName, names) in config.get(section, {}).items():
             for (name, obj) in zip(names, _importFromModule(moduleName, names), strict = True):
-                target[name] = obj
+                yield (name, obj)
+
+    @typechecked
+    def _imports(targetModule: ModuleType | None = None) -> None:
+        target = globals() if targetModule is None else targetModule.globals()
+        for (name, obj) in _importSection(_IMPORTS_SECTION):
+            target[name] = obj
 
     @typechecked  # Public API
     async def anyCall(funcNameAndArgs: _AnyCallArg) -> object:
@@ -654,44 +661,59 @@ if RUNNING_IN_WORKER:  ##
         Returns the list of names of other exported functions so that
         they can be wrapped properly in the main thread.
         """
-        if request == _CONNECT_REQUEST:
-            _log(f'Assigned name "{name}"')
-            global _NAME  # noqa: PLW0603  # pylint: disable=global-statement
-            _NAME = name
-            config['attributes'] = attributes
-            _log("Tag:", attributes.get(_TAG_ATTR, "''"))
-            _log(f"Connected to the main thread, sync_main_only = {config.get('sync_main_only', False)}, ready for requests")
-            assert __export__, __export__
-            return tuple(chain((_CONNECT_RESPONSE,), (funcName for funcName in __export__ if funcName != _connectFromMain.__name__)))
-        _error(f"Connection to main thread is misconfigured, can't continue: {type(request)}({request!r})")
+        global _connected, _NAME  # noqa: PLW0603  # pylint: disable=global-statement
+        if _connected:
+            _error("Connection to the main thread was already established earlier")
+        if request != _CONNECT_REQUEST:
+            _error(f"Connection to main thread is misconfigured, can't continue: {type(request)}({request!r})")
+        _log(f'Assigned name "{name}"')
+        _NAME = name
+        config['attributes'] = attributes
+        _log("Tag:", attributes.get(_TAG_ATTR, "''"))
+        assert __export__, __export__
+        ret = tuple(chain((_CONNECT_RESPONSE,), (funcName for funcName in __export__ if funcName != _connectFromMain.__name__)))
+        _connected = True
+        _log(f"Connected to the main thread, sync_main_only = {config.get('sync_main_only', False)}, ready for requests")
+        return ret
 
     @typechecked  # Public API
     def export(*functions: _CallableOrCoroutine) -> None:
         """
-        Must be called by the importing module with the list of functions
-        to be exported.
+        Must be called by the importing module with the list of functions to be exported.
 
         Wraps them with necessary decorators and puts them
         into the `__export__` list of the calling module.
+
+        May be called multiple times until connection from the main thread is made.
         """
-        target = _getframe(1).f_globals  # globals of the calling module
+        global _targetModule  # noqa: PLW0603  # pylint: disable=global-statement
 
-        _imports(target)  # ToDo: Call it only once!!
-        _Adapter.fromConfig()  # Importing adapters late so that potential errors would not interrupt startup too early
+        if _connected:
+            _error("Connection to the main thread already established, can't export new functions after that")
 
-        target[_connectFromMain.__name__] = _connectFromMain
+        firstExport = not _targetModule
+
+        if not _targetModule:  # Do this only once
+            currentFrame = currentframe()
+            assert currentFrame
+            _targetModule = getmodule(currentFrame.f_back)  # Calling module
+            assert _targetModule
+            _imports(_targetModule)  # Doing imports this late so that potential errors would not interrupt startup too early
+            _Adapter.fromConfig()
+            _targetModule._connectFromMain = _connectFromMain  # type: ignore[attr-defined]  # pylint: disable=protected-access
+            _targetModule.__export__ = (_connectFromMain.__name__,)  # type: ignore[attr-defined]
+
         exportNames: list[str] = []
-        if _connectFromMain.__name__ not in target.get(__EXPORT__, ()):
-            exportNames.append(_connectFromMain.__name__)
-
         for func in functions:
-            target[func.__name__] = _workerWrap(func)
+            setattr(_targetModule, func.__name__, _workerWrap(func))
             exportNames.append(func.__name__)
 
-        exportNamesTuple = tuple(chain(target.get(__EXPORT__, ()), exportNames))
-        target[__EXPORT__] = exportNamesTuple
-        globals()[__EXPORT__] = exportNamesTuple  # This is only needed to make `_connectFromMain()` code simple and universal for both `export()` and `_autoExport()`
-        _log("Started worker, providing functions:", ', '.join(name for name in exportNamesTuple if name != _connectFromMain.__name__))  # ToDo: Print "started" once, prevent export() calls after connection
+        exportNamesTuple = tuple(chain(_targetModule.__export__, exportNames))
+        _targetModule.__export__ = exportNamesTuple  # type: ignore[attr-defined]
+        modules[__name__].__export__ = exportNamesTuple  # type: ignore[attr-defined]  # This is only needed to make `_connectFromMain()` code simple and universal for both `export()` and `_autoExport()`
+        _log("Providing functions:", ', '.join(name for name in exportNamesTuple if name != _connectFromMain.__name__))
+        if firstExport:
+            _log("Started worker, waiting for connection from the main thread")
 
     @typechecked
     async def _autoExport() -> None:
@@ -700,24 +722,27 @@ if RUNNING_IN_WORKER:  ##
 
         Wraps and exports functions listed in the config.
         """
+        global _targetModule  # noqa: PLW0603  # pylint: disable=global-statement
+        assert not _connected
+        assert not _targetModule
+        _targetModule = modules[__name__]
+
         _imports()
         _Adapter.fromConfig()
 
         exportNames = [_connectFromMain.__name__,]
-        target = globals()
+        for (funcName, func) in _importSection(_EXPORTS_SECTION):
+            if not callable(func):
+                _error(f'Bad exported function "{funcName}", must be a class/function/coroutine, got {type(func)}')
+            setattr(_targetModule, funcName, _workerWrap(func))
+            exportNames.append(funcName)
 
-        if mapping := config.get(_EXPORTS_SECTION):
-            for (moduleName, funcNames) in mapping.items():  # ToDo: Create function
-                for (funcName, func) in zip(funcNames, _importFromModule(moduleName, funcNames), strict = True):
-                    if not callable(func):
-                        _error(f'Bad exported function "{funcName}", must be a class/function/coroutine, got {type(func)}')
-                    target[funcName] = _workerWrap(func)
-                    exportNames.append(funcName)
-        else:
+        if len(exportNames) < 2:
             _log("WARNING: no functions found to export, check `[exports]` section in the config")
 
-        target[__EXPORT__] = tuple(exportNames)
-        _log("Started worker, providing functions:", ', '.join(name for name in exportNames if name != _connectFromMain.__name__))
+        _targetModule.__export__ = tuple(exportNames)  # type: ignore[attr-defined]
+        _log("Providing functions:", ', '.join(name for name in exportNames if name != _connectFromMain.__name__))
+        _log("Started worker, waiting for connection from the main thread")
 
     if __name__ == '__main__':
         # If this module itself is used as a worker, it imports functions mentioned in the config and exports them automatically
