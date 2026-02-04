@@ -18,7 +18,21 @@ from types import ModuleType
 from typing import cast, final, ClassVar, Final, Literal, NoReturn, ReadOnly, Self, TypeAlias, TypedDict, Union
 
 from pyscript import config, RUNNING_IN_WORKER  # Yes, this module is indeed PyScript-only and won't work outside the browser
-from js import console  # Doesn't require CORS to work
+
+try:
+    from pyscript.web import page  # This would break in a worker if CORS is not configured  # pylint: disable=import-error, no-name-in-module
+except AttributeError as ex:
+    if RUNNING_IN_WORKER:
+        page = None  # type: ignore[assignment]  # This would only inhibit PyScript version detection, not mission-critical
+    else:  # This shouldn't ever happen
+        raise
+
+try:
+    from pyodide.ffi import JsProxy
+except ImportError:
+    type JsProxy = object  # type: ignore[no-redef]
+
+from js import console  # pyodide, doesn't require CORS to work
 
 try:  # Getting CPU count
     from os import process_cpu_count
@@ -49,16 +63,8 @@ except ImportError:
     except (ImportError, ValueError, AttributeError):
         _pthreads = False
 
-try:
-    from pyscript.web import page  # This would break in a worker if CORS is not configured  # pylint: disable=import-error, no-name-in-module
-except AttributeError as ex:
-    if RUNNING_IN_WORKER:
-        page = None  # type: ignore[assignment]  # This would only inhibit PyScript version detection, not mission-critical
-    else:  # This shouldn't ever happen
-        raise
-
 try:  # Getting PyScript version
-    from pyscript import version as _pyscriptVersion  # type: ignore[attr-defined]
+    from pyscript import version as _pyscriptVersion  # type: ignore[attr-defined]  # pylint: disable=ungrouped-imports
 except ImportError:
     try:
         from pyscript import __version__ as _pyscriptVersion  # type: ignore[attr-defined]
@@ -74,11 +80,6 @@ try:  # Getting Pyodide version
     from pyodide_js import version as _pyodideVersion  # type: ignore[import-not-found]
 except ImportError:
     _pyodideVersion = "UNKNOWN"
-
-try:
-    from pyodide.ffi import JsProxy
-except ImportError:
-    type JsProxy = object  # type: ignore[no-redef]
 
 try:  # To turn runtime typechecking on, add `"beartype"` to the `packages` array in your `workerlib.toml`
     from beartype import beartype as typechecked, __version__ as _beartypeVersion
