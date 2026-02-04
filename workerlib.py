@@ -4,7 +4,7 @@
 # Tested on PyScript 26.1.1 / Pyodide 0.29.1 / Python 3.13.2
 #
 from asyncio import create_task, gather
-from collections.abc import Coroutine, Buffer, Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Buffer, Callable, Coroutine, Iterable, Iterator, Mapping, Sequence
 from functools import partial, wraps
 from importlib import import_module
 from inspect import isclass, iscoroutinefunction, signature
@@ -93,10 +93,12 @@ except ImportError:
 
 type _Args[T = object] = tuple[T, ...]
 type _Kwargs[T = object] = dict[str, T]
-type _ArgsKwargs[AT = object, KT = object] = tuple[_Args[AT], _Kwargs[AT]]
+type _ArgsKwargs[AT = object, KT = AT] = tuple[_Args[AT], _Kwargs[KT]]
+
 type _Coroutine[T = object] = Coroutine[None, None, T]
 type _CoroutineFunction[T = object] = Callable[..., _Coroutine[T]]
 type _CallableOrCoroutine[T = object] = Callable[..., T | _Coroutine[T]]
+
 type _Time = float | int
 type _Timed[T] = Mapping[str, str | _Time | T]
 
@@ -112,13 +114,13 @@ _EXPORTS_SECTION: Final[str] = 'exports'
 _IMPORTS_SECTION: Final[str] = 'imports'
 
 _WORKERLIB_PREFIX: Final[str] = '_workerlib_'
-_ADAPTER_MARKER: Final[str] = _WORKERLIB_PREFIX + 'adapter'  # Used to differential adapter data from other mappings
+_ADAPTER_MARKER: Final[str] = _WORKERLIB_PREFIX + 'adapter'  # Used to differentiate adapter data from other mappings
 _ADAPTER_VALUE: Final[str] = 'value'
 _ADAPTER_FULLNAME: Final[str] = 'className'
 _START_TIME: Final[str] = 'startTime'
-_START_TIME_ADAPTER: Final[str] = _WORKERLIB_PREFIX + _START_TIME  # Used to differentiate start time data from other adapters
+_START_TIME_ADAPTER: Final[str] = _WORKERLIB_PREFIX + _START_TIME  # Used to differentiate start time data from real adapters
 _DEFAULT = '__default'
-_PICKLE = "pickle"
+_PICKLE = 'pickle'
 
 _BUILTINS = 'builtins'
 _BUILTINS_NAMES: Final[Sequence[str | None]] = (_BUILTINS, '', 'None', None)
