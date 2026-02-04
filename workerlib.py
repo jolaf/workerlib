@@ -7,7 +7,7 @@ from asyncio import create_task, gather
 from collections.abc import Buffer, Callable, Coroutine, Iterable, Iterator, Mapping, Sequence
 from functools import partial, wraps
 from importlib import import_module
-from inspect import currentframe, getmodule, isclass, iscoroutinefunction, signature
+from inspect import currentframe, getmodule, isclass, iscoroutinefunction, signature, Parameter as P, _ParameterKind
 from itertools import chain
 from numbers import Real
 from pickle import dumps as pickleDump, loads as pickleLoad
@@ -105,6 +105,7 @@ type _Timed[T] = Mapping[str, str | _Time | T]
 _BasicTypes: TypeAlias = Real | str | Buffer | None  # Using `type` breaks `isinstance()`
 _Transferable: TypeAlias = _BasicTypes | Iterable  # type: ignore[type-arg]  # Using `type` or adding `[Any]` breaks `isinstance()`  # noqa: UP040
 
+
 _NAME = ''
 
 _PY_SCRIPT: Final[str] = 'script[type="py"]'
@@ -174,6 +175,15 @@ def _fullName(obj: object) -> str:
     if (moduleName := obj.__module__) in _BUILTINS_NAMES:
         return qualName
     return f"{moduleName}.{qualName}"
+
+@typechecked
+def _getArgNames(func: _CallableOrCoroutine, *paramKinds: _ParameterKind) -> Iterable[str]:
+    params = signature(func).parameters
+    return (name for (name, param) in params.items() if param.kind in paramKinds) if paramKinds else params.keys()
+
+@typechecked
+def _countArgs(func: _CallableOrCoroutine, *paramKinds: _ParameterKind) -> int:
+    return len(list(_getArgNames(func, *paramKinds)))
 
 @typechecked
 async def _gatherList[S, V](coro: Callable[[S], Coroutine[None, None, V]], iterable: Iterable[S]) -> list[V]:
@@ -258,21 +268,19 @@ class _Adapter:  # ToDo: Find a way to declare a "total" adapter for total pickl
 
     def __init__[T](self, cls: type[T], encoder: _EncoderType[T], decoder: _DecoderType[T] | None) -> None:  # pylint: disable=redefined-outer-name
         if encoder:
-            encoderParams = signature(encoder).parameters.values()
-            if not (numEncoderArguments := sum(1 for p in encoderParams if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD, p.VAR_POSITIONAL))):
+            if not (numEncoderArguments := _countArgs(encoder, P.POSITIONAL_ONLY, P.POSITIONAL_OR_KEYWORD, P.VAR_POSITIONAL)):
                 _error(f"Adapter encoder for type {self.cls} accepts no positional arguments: {self.encoder}")
             if numEncoderArguments > 1:
-                if (n := sum(1 for p in encoderParams if p.kind == p.POSITIONAL_ONLY)) > 1:  # ToDo: create function
+                if (n := _countArgs(encoder, P.POSITIONAL_ONLY)) > 1:
                     _error(f"Adapter encoder for type {self.cls} has too many positional arguments: {self.encoder}, expected 1, got {n}")
 
         if decoder is None:
             decoder = cls
 
-        decoderParams = signature(decoder).parameters.values()
-        if not (numDecoderArguments := sum(1 for p in decoderParams if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD, p.VAR_POSITIONAL))):
+        if not (numDecoderArguments := _countArgs(decoder, P.POSITIONAL_ONLY, P.POSITIONAL_OR_KEYWORD, P.VAR_POSITIONAL)):
             _error(f"Adapter decoder for type {cls} accepts no positional arguments: {decoder}")
         if numDecoderArguments > 1:
-            if (n := sum(1 for p in decoderParams if p.kind == p.POSITIONAL_ONLY)) > 2:
+            if (n := _countArgs(decoder, P.POSITIONAL_ONLY)) > 2:
                 _error(f"Adapter decoder for type {cls} has too many positional arguments: {decoder}, expected 1 or 2, got {n}")
 
         self.cls = cls
@@ -563,10 +571,9 @@ if RUNNING_IN_WORKER:  ##
                     return argsKwargs
                 if not all(isinstance(key, str) for key in lastArg):
                     return argsOnly
-                funcParams = signature(func).parameters
-                if any(param.kind == param.VAR_KEYWORD for param in funcParams.values()):
+                if _countArgs(func, P.VAR_KEYWORD):
                     return argsKwargs  # If `func` has a `**kwargs` argument, any `str`-keyed dictionary would fit
-                paramNames = {paramName for (paramName, param) in funcParams.items() if param.kind in (param.POSITIONAL_OR_KEYWORD, param.KEYWORD_ONLY)}
+                paramNames = set(_getArgNames(func, P.POSITIONAL_OR_KEYWORD, P.KEYWORD_ONLY))
                 return argsKwargs if all(argName in paramNames for argName in lastArg) else argsOnly  # If `func` accepts keyword arguments, make sure all the keys in `lastArg` are among them
 
             assert not kwargs  # `kwargs` get passed to workers as the last of `args`, of type `dict`
