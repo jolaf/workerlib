@@ -15,7 +15,7 @@ from re import search
 from sys import flags, modules, platform, version as _pythonVersion
 from time import time
 from types import ModuleType
-from typing import cast, ClassVar, Final, NoReturn, ReadOnly, Self, TypeAlias, TypedDict
+from typing import cast, final, ClassVar, Final, NoReturn, ReadOnly, Self, TypeAlias, TypedDict, Union
 
 from pyscript import config, RUNNING_IN_WORKER  # Yes, this module is indeed PyScript-only and won't work outside the browser
 
@@ -154,7 +154,7 @@ def _error(message: str) -> NoReturn:
     Logs an error message to the console and stops further operations
     by raising a `RuntimeError`.
     """
-    raise RuntimeError(message)
+    raise RuntimeError(f"[{_NAME}] ERROR: {message}")
 
 @typechecked  # Public API
 def elapsedTime(startTime: _Time) -> str:  # noqa: PYI041  # beartype is right enforcing this: https://github.com/beartype/beartype/issues/66
@@ -253,16 +253,27 @@ class _AnyCallArg(TypedDict):
     kwargs: ReadOnly[Mapping[str, object]]
 
 @typechecked
-class _Adapter:  # ToDo: Find a way to declare a "total" adapter for total pickle
+@final
+class All(tuple[object]):
+    """
+    Special class to use in "All" adapter to process everything,
+    bypassing JS-compatible data conversion.
+    """
+    def __init__(self) -> NoReturn:
+        _error('"All" class is just a marker, it should never be instantiated')
 
-    type _AdapterEncoding = Mapping[str, object]
+@typechecked
+class _Adapter:
+
     type _EncoderType[T = object] = Callable[[T], object | _Coroutine[object]] | None
-    type _DecoderType[T = object] = Callable[[object], T | _Coroutine[T]] | Callable[[object, str], T | _Coroutine[T]]
+    type _DecoderType[T = object] = Callable[[object], T | _Coroutine[T]] | Callable[[object, str | None], T | _Coroutine[T]]
+    type _AdapterEncoding = Mapping[str, object] | object | None
 
     cls: type
     encoder: _EncoderType
     decoder: _DecoderType
 
+    totalAdapter: ClassVar[Union['_Adapter', None]] = None  # We have to use `Union` as `beartype` breaks at `str | None`, as of v0.22.9  # pylint: disable=consider-alternative-union-syntax
     firstAdapters: ClassVar[dict[str, '_Adapter']] = {}  # Should be checked before collections, e.g., `Enum`
     secondAdapters: ClassVar[dict[str, '_Adapter']] = {}  # Should be checked after collections, e.g., custom classes and `object`
 
@@ -274,14 +285,19 @@ class _Adapter:  # ToDo: Find a way to declare a "total" adapter for total pickl
                 if (n := _countArgs(encoder, P.POSITIONAL_ONLY)) > 1:
                     _error(f"Adapter encoder for type {self.cls} has too many positional arguments: {self.encoder}, expected 1, got {n}")
 
+        self.isTotal = issubclass(cls, All)
+
         if decoder is None:
+            if self.isTotal:
+                _error('"All" adapter must have a decoder')  # `All` is a special class used to designate a total adapter, it shouldn't get to the user
             decoder = cls
 
         if not (numDecoderArguments := _countArgs(decoder, P.POSITIONAL_ONLY, P.POSITIONAL_OR_KEYWORD, P.VAR_POSITIONAL)):
             _error(f"Adapter decoder for type {cls} accepts no positional arguments: {decoder}")
         if numDecoderArguments > 1:
-            if (n := _countArgs(decoder, P.POSITIONAL_ONLY)) > 2:
-                _error(f"Adapter decoder for type {cls} has too many positional arguments: {decoder}, expected 1 or 2, got {n}")
+            n = _countArgs(decoder, P.POSITIONAL_ONLY)
+            if self.isTotal or n > 2:
+                _error(f"Adapter decoder for type {cls} has too many positional arguments: {decoder}, expected {'1' if self.isTotal else '1 or 2'}, got {n}")
 
         self.cls = cls
         self.adapterName = _fullName(cls)
@@ -289,44 +305,52 @@ class _Adapter:  # ToDo: Find a way to declare a "total" adapter for total pickl
         self.decoder = decoder
         self.numDecoderArguments = numDecoderArguments
 
-        _log(f"Adapter created: {cls} => {encoder} => {decoder}")
+        _log(f"Adapter created: {cls} => {encoder} => {decoder}")  # ToDo: print full names instead
 
-    async def _encode(self, obj: object) -> _AdapterEncoding | None:
-        if not isinstance(obj, self.cls):
+    async def _encode(self, obj: object) -> _AdapterEncoding:
+        if not self.isTotal and not isinstance(obj, self.cls):
             return None
         if self.encoder:  # noqa: SIM108  # pylint: disable=consider-ternary-expression
             value = await self.encoder(obj) if iscoroutinefunction(self.encoder) else self.encoder(obj)
         else:
             value = obj  # Trying to pass the object as is, hoping it would work, like it does for `Enum`s
-        return {
+        return value if self.isTotal else {
             _ADAPTER_MARKER: self.adapterName,  # This is NOT the name of the type of object being encoded, but the name of the adapter thas has to be used to decode the object on the other side
             _ADAPTER_FULLNAME: _fullName(obj),  # This is the actual name of the type being transferred, but it's rarely used in decoding
             _ADAPTER_VALUE: value,
         }
 
-    async def _decode(self, obj: object, fullName: str) -> object:
+    async def _decode(self, obj: object, fullName: str | None = None) -> object:
         if self.numDecoderArguments > 1:
+            assert not self.isTotal
+            assert fullName
             # If the decoder accepts two arguments, pass `fullName` as a second argument to give the decoder a chance to reconstruct an object precisely
             return await self.decoder(obj, fullName) if iscoroutinefunction(self.decoder) else self.decoder(obj, fullName)  # type: ignore[call-arg]
         return await self.decoder(obj) if iscoroutinefunction(self.decoder) else self.decoder(obj)  # type: ignore[call-arg]
 
     @classmethod
-    async def _checkAndEncode(cls, adapters: Mapping[str, Self], obj: object) -> _AdapterEncoding | None:
+    async def _checkAndEncode(cls, adapters: Mapping[str, Self], obj: object) -> _AdapterEncoding:
         for adapter in adapters.values():
             if ret := await adapter._encode(obj):  # pylint: disable=protected-access
                 return ret
         return None
 
     @classmethod
-    async def checkAndEncodeFirst(cls, obj: object) -> _AdapterEncoding | None:
+    async def encodeFirst(cls, obj: object) -> _AdapterEncoding:
+        if cls.totalAdapter:
+            return await cls.totalAdapter._encode(obj)  # pylint: disable=protected-access
         return await cls._checkAndEncode(cls.firstAdapters, obj)
 
     @classmethod
-    async def checkAndEncodeSecond(cls, obj: object) -> _AdapterEncoding | None:
+    async def encodeSecond(cls, obj: object) -> _AdapterEncoding:
         return await cls._checkAndEncode(cls.secondAdapters, obj)
 
     @classmethod
-    async def findAndDecode(cls, obj: Mapping[object, object]) -> object:
+    async def decodeFirst(cls, obj: object) -> object | None:
+        return cls.totalAdapter and await cls.totalAdapter._decode(obj)  # pylint: disable=protected-access
+
+    @classmethod
+    async def decodeSecond(cls, obj: Mapping[object, object]) -> object:
         if not (adapterName := cast(str | None, obj.get(_ADAPTER_MARKER))):
             return obj
         if adapterName == _START_TIME_ADAPTER:
@@ -398,13 +422,18 @@ class _Adapter:  # ToDo: Find a way to declare a "total" adapter for total pickl
         Reads `[adapters]` config section, imports the necessary modules
         and functions, and makes them available as the global `_adapters` list.
         """
-        if cls.firstAdapters or cls.secondAdapters:
+        if cls.totalAdapter or cls.firstAdapters or cls.secondAdapters:
             return  # Initialize adapters only once
         if not (mapping := cast(Mapping[str, Sequence[str]], config.get(_ADAPTERS_SECTION))):
             return  # No adapters defined in config
         for (moduleName, names) in mapping.items():
             module = _importModule(moduleName)
             for adapter in cls._fromSequence(module, names):
+                if cls.totalAdapter or (adapter.isTotal and (cls.firstAdapters or cls.secondAdapters)):
+                    _error('If "All" adapter is specified, it must be the only adapter specified')
+                if adapter.isTotal:
+                    cls.totalAdapter = adapter
+                    continue
                 m = cls.firstAdapters if issubclass(adapter.cls, _Transferable) else cls.secondAdapters
                 m[adapter.adapterName] = adapter
 
@@ -416,7 +445,7 @@ async def _to_js(obj: object) -> object:
     Recurses into collections, uses adapters, and makes every effort possible
     to produce a transferable result.
     """
-    if ret := await _Adapter.checkAndEncodeFirst(obj):
+    if (ret := await _Adapter.encodeFirst(obj)) is not None:
         return ret
     if isinstance(obj, _BasicTypes):
         return obj  # Save it from being converted to `tuple` as an `Iterable`
@@ -424,7 +453,7 @@ async def _to_js(obj: object) -> object:
         return await _gatherMap(_to_js, obj)
     if isinstance(obj, Iterable):
         return await _gatherList(_to_js, obj)
-    if ret := await _Adapter.checkAndEncodeSecond(obj):
+    if (ret := await _Adapter.encodeSecond(obj)) is not None:
         return ret
     _log(f"WARNING: No adapter found for class {type(obj)}, and transport layer (JavaScript structured clone) would probably not accept it as is, see https://developer.mozilla.org/docs/Web/API/Web_Workers_API/Structured_clone_algorithm")
     return obj  # Trying to pass the object as is, hoping it would work
@@ -439,6 +468,8 @@ async def _to_py(obj: object) -> object:
     """
     if hasattr(obj, 'to_py'):  # JsProxy
         return await _to_py(obj.to_py())
+    if (ret := await _Adapter.decodeFirst(obj)) is not None:
+        return ret
     if isinstance(obj, _BasicTypes):
         return obj  # Save it from being converted to `tuple` as an `Iterable`
     if not isinstance(obj, Mapping):
@@ -447,7 +478,7 @@ async def _to_py(obj: object) -> object:
         return obj  # Not `Iterable`
     # isinstance(obj, Mapping)
     obj = await _gatherMap(_to_py, obj)
-    return await _Adapter.findAndDecode(obj)
+    return await _Adapter.decodeSecond(obj)
 
 @typechecked
 def _diagnostics() -> Sequence[str]:
@@ -577,10 +608,11 @@ if RUNNING_IN_WORKER:  ##
                 return argsKwargs if all(argName in paramNames for argName in lastArg) else argsOnly  # If `func` accepts keyword arguments, make sure all the keys in `lastArg` are among them
 
             assert not kwargs  # `kwargs` get passed to workers as the last of `args`, of type `dict`
+            print('###', args)
             args = cast(_Args, await _to_py(args))
             (args, kwargs) = extractKwargs(*args)  # If `func` accepts keyword arguments, extract them from the last of `args`
             # vv WRAPPED CALL vv
-            ret = await func(*args, **kwargs) if iscoroutinefunction(func) else func(*args, **kwargs)
+            ret = await func(*args, **kwargs) if iscoroutinefunction(func) else func(*args, **kwargs)  # ToDo: Catch and send exception?? Or at least catch in main?
             # ^^ WRAPPED CALL ^^
             return await _to_js(ret)
 
