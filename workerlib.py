@@ -289,7 +289,7 @@ class _Adapter:
 
         if decoder is None:
             if self.isTotal:
-                _error('"All" adapter must have a decoder')  # `All` is a special class used to designate a total adapter, it shouldn't get to the user
+                _error('"All" adapter must have a decoder')  # `All` is a special class used to designate a total adapter; it shouldn't get to the user
             decoder = cls
 
         if not (numDecoderArguments := _countArgs(decoder, P.POSITIONAL_ONLY, P.POSITIONAL_OR_KEYWORD, P.VAR_POSITIONAL)):
@@ -315,7 +315,7 @@ class _Adapter:
         else:
             value = obj  # Trying to pass the object as is, hoping it would work, like it does for `Enum`s
         return value if self.isTotal else {
-            _ADAPTER_MARKER: self.adapterName,  # This is NOT the name of the type of object being encoded, but the name of the adapter thas has to be used to decode the object on the other side
+            _ADAPTER_MARKER: self.adapterName,  # This is NOT the name of the type of object being encoded, but the name of the adapter that has to be used to decode the object on the other side
             _ADAPTER_FULLNAME: _fullName(obj),  # This is the actual name of the type being transferred, but it's rarely used in decoding
             _ADAPTER_VALUE: value,
         }
@@ -590,7 +590,7 @@ if RUNNING_IN_WORKER:  ##
             assert isinstance(kwargs, Mapping)
             (args, kwargs) = await gather(_gatherList(_to_py, args), _gatherValues(_to_py, kwargs))
             # vv WRAPPED CALL vv
-            ret = await func(*args, **kwargs) if iscoroutinefunction(func) else func(*args, **kwargs)  # ToDo: Catch and send exception?? Or at least catch in main?
+            ret = await func(*args, **kwargs) if iscoroutinefunction(func) else func(*args, **kwargs)
             # ^^ WRAPPED CALL ^^
             return await _to_js(ret)
 
@@ -656,30 +656,28 @@ if RUNNING_IN_WORKER:  ##
     @typechecked  # Public API
     async def anyCall(funcNameAndArgs: _AnyCallArg) -> object:
         """
-        Special service function you can export the same way as any other function.
+        Special service function that can be exported the same way as any other function.
 
-        After this function is exported, you may use it to call any other function
-        in the same worker – just call it like `worker.anyCall.funcName(*args, **kwargs)`.
-        Just one export – and complete access to the whole worker module.
-        You can even call `eval()` this way, if you want.
+        After this function is exported, it may be used to call any other function
+        in the same worker, like this: `worker.anyCall.funcName(*args, **kwargs)`.
+        Anything, including `eval()` may be called this way.
 
-        So, only export this function if you definitely and completely control
-        the main thread.
+        So, this function should only be exported when the main thread
+        is completely controlled.
 
-        Another benefit of this function is that all the arguments you pass
+        Another benefit of this function is that all the arguments passed
         will be passed to a worker as a single argument. If that argument
-        is encoded into a single `memoryview`, it may be much faster than
-        encoding each argument separately, particularly if lists and maps
+        is encoded into a single `Buffer`, it may be much faster than
+        encoding each argument individually, particularly if lists and maps
         are involved.
 
-        One of the great ways to encode single arbitrary object as `memoryview`
-        is `pickle`. So, this function works the best if you use an adapter
-        like this:
+        One of the great ways to encode an arbitrary object as a `Buffer`
+        is `pickle`. So, this function works the best with an adapter like this:
 
         [adapters]
         "workerlib" = ["All", "pickle", "pickle"]
 
-        One exported function, one adapter – and everything works very fast.
+        One exported function, one adapter – and everything works, and very fast.
         """
         funcName = funcNameAndArgs['funcName']
         args = funcNameAndArgs['args']
@@ -727,7 +725,7 @@ if RUNNING_IN_WORKER:  ##
         Wraps them with necessary decorators and puts them
         into the `__export__` list of the calling module.
 
-        May be called multiple times until connection from the main thread is made.
+        May be called multiple times until a connection from the main thread is made.
         """
         global _targetModule  # noqa: PLW0603  # pylint: disable=global-statement
 
