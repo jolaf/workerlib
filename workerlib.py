@@ -172,6 +172,18 @@ def _fullName(obj: object) -> str:
     return f"{moduleName}.{qualName}"
 
 @typechecked
+async def _gatherList[S, V](coro: Callable[[S], Coroutine[None, None, V]], iterable: Iterable[S]) -> list[V]:
+    return await gather(*(coro(s) for s in iterable))
+
+@typechecked
+async def _gatherMap[S, V](coro: Callable[[S], Coroutine[None, None, V]], mapping: Mapping[S, S]) -> dict[V, V]:
+    return {k: v for (k, v) in await gather(*(gather(*(coro(s) for s in k_v)) for k_v in mapping.items()))}  # pylint: disable=unnecessary-comprehension
+
+@typechecked
+async def _gatherValues[K, S, V](coro: Callable[[S], Coroutine[None, None, V]], mapping: Mapping[K, S]) -> dict[K, V]:
+    return dict(zip(mapping.keys(), await gather(*(coro(s) for s in mapping.values())), strict = True))
+
+@typechecked
 def _importModule(moduleName: str | None) -> ModuleType:
     """
     Imports a module by its name and returns the module object.
@@ -397,9 +409,9 @@ async def _to_js(obj: object) -> object:
     if isinstance(obj, _BasicTypes):
         return obj  # Save it from being converted to `tuple` as an `Iterable`
     if isinstance(obj, Mapping):  # Should be checked before `Iterable`, as `Mapping` is an `Iterable` too
-        return {k: v for (k, v) in await gather(*(gather(*(_to_js(x) for x in k_v)) for k_v in obj.items()))}  # ToDo: make functions for these  # pylint: disable=unnecessary-comprehension
+        return await _gatherMap(_to_js, obj)
     if isinstance(obj, Iterable):
-        return await gather(*(_to_js(v) for v in obj))
+        return await _gatherList(_to_js, obj)
     if ret := await _Adapter.checkAndEncodeSecond(obj):
         return ret
     _log(f"WARNING: No adapter found for class {type(obj)}, and transport layer (JavaScript structured clone) would probably not accept it as is, see https://developer.mozilla.org/docs/Web/API/Web_Workers_API/Structured_clone_algorithm")
@@ -419,10 +431,10 @@ async def _to_py(obj: object) -> object:
         return obj  # Save it from being converted to `tuple` as an `Iterable`
     if not isinstance(obj, Mapping):
         if isinstance(obj, Iterable):
-            return tuple(await gather(*(_to_py(v) for v in obj)))
+            return tuple(await _gatherList(_to_py, obj))
         return obj  # Not `Iterable`
     # isinstance(obj, Mapping)
-    obj = {k: v for (k, v) in await gather(*(gather(*(_to_py(x) for x in k_v)) for k_v in obj.items()))}  # pylint: disable=unnecessary-comprehension
+    obj = await _gatherMap(_to_py, obj)
     return await _Adapter.findAndDecode(obj)
 
 @typechecked
@@ -758,10 +770,9 @@ else:  ##  MAIN THREAD
         Coordinates with `@_workerSerialized`.
         """
         @typechecked
-        async def mainSerializedWrapper(*args: object, **kwargs: object) -> T:
+        async def mainSerializedWrapper(*args_: object, **kwargs: object) -> T:
             assert isinstance(func, JsProxy), type(func)
-            args = await gather(*(_to_js(arg) for arg in args))  # type: ignore[assignment]
-            kwargs = dict(zip(kwargs.keys(), await gather(*(_to_js(v) for v in kwargs.values())), strict = True))
+            (args, kwargs) = await gather(_gatherList(_to_js, args_), _gatherValues(_to_js, kwargs))
             # vv WRAPPED CALL vv
             ret = await cast(_CoroutineFunction[T], func)(*args, kwargs)  # Passing `kwargs` as a positional argument because `**kwargs` don't get serialized properly and are sent as the last of `args` anyway
             # ^^ WRAPPED CALL ^^
