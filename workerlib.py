@@ -107,6 +107,8 @@ _Transferable: TypeAlias = _BasicTypes | Iterable  # type: ignore[type-arg]  # U
 
 _NAME = ''
 
+_PY_SCRIPT: Final[str] = 'script[type="py"]'
+_PY_SCRIPT_WORKER: Final[str] = _PY_SCRIPT + '[worker]'
 __EXPORT__: Final[str] = '__export__'
 
 _ADAPTERS_SECTION: Final[str] = 'adapters'
@@ -831,12 +833,12 @@ else:  ##  MAIN THREAD
         raises an exception.
         """
         if workerName:
-            elements = page.find(f'script[type="py"][worker][name={workerName}]')
+            elements = page.find(_PY_SCRIPT_WORKER + f'[name={workerName}]')
             if not (element := elements[0] if elements else None):
                 _log(f'WARNING: Could not find a worker named "{workerName}" in DOM')
         else:
-            if not (elements := page.find('script[type="py"][worker][name]')):
-                pyScripts = '\n'.join(tag.outerHTML for tag in page.find('script[type="py"]'))  # ToDo: Create constant?
+            if not (elements := page.find(_PY_SCRIPT_WORKER + '[name]')):
+                pyScripts = '\n'.join(tag.outerHTML for tag in page.find(_PY_SCRIPT))
                 _error(f"Could not find any named workers in DOM{', only found the following PyScript tags:\n' + pyScripts if pyScripts else ''}")
             if len(elements) > 1:
                 _error(f"Found the following named workers in DOM: {', '.join([element.getAttribute(_NAME_ATTR) for element in elements])}; which one to connect to?..")
