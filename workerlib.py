@@ -15,35 +15,9 @@ from re import search
 from sys import flags, modules, platform, version as _pythonVersion, _getframe
 from time import time
 from types import ModuleType
-from typing import cast, Final, NoReturn, ReadOnly, Required, TypeAlias, TypedDict
+from typing import cast, ClassVar, Final, NoReturn, ReadOnly, Self, TypeAlias, TypedDict
 
 from pyscript import config, RUNNING_IN_WORKER  # Yes, this module is indeed PyScript-only and won't work outside the browser
-
-# We name all internal global stuff starting with `_` underscore to minimize the chance of a conflict with exported user functions
-type _Args[T = object] = tuple[T, ...]
-type _Kwargs[T = object] = dict[str, T]
-type _ArgsKwargs[AT = object, KT = object] = tuple[_Args[AT], _Kwargs[AT]]
-type _Coroutine[T = object] = Coroutine[None, None, T]
-type _CoroutineFunction[T = object] = Callable[..., _Coroutine[T]]
-type _CallableOrCoroutine[T = object] = Callable[..., T | _Coroutine[T]]
-type _Time = float | int
-type _Timed[T] = Mapping[str, str | _Time | T]
-
-_BasicTypes = Real | str | Buffer | None  # Using `type` breaks `isinstance()`
-_Transferable: TypeAlias = _BasicTypes | Iterable  # type: ignore[type-arg]  # Using `type` or adding `[Any]` breaks `isinstance()`  # noqa: UP040
-
-type _Adapter[T = object] = tuple[
-    type[T],
-    Callable[[T], object | _Coroutine[object]]
-        | None,
-    Callable[[object], T | _Coroutine[T]]
-        | Callable[[object, str], T | _Coroutine[T]]
-]
-
-class _AnyCallArg(TypedDict, total = False):
-    funcName: Required[ReadOnly[str]]
-    args: ReadOnly[Sequence[object]]
-    kwargs: ReadOnly[Mapping[str, object]]
 
 try:  # Getting CPU count
     from os import process_cpu_count
@@ -115,6 +89,20 @@ except ImportError:
     def typechecked[T](func: _CallableOrCoroutine[T]) -> _CallableOrCoroutine[T]:  # type: ignore[no-redef]  # pylint: disable=redefined-outer-name
         return func
 
+# We name all internal global stuff starting with `_` underscore to minimize the chance of a conflict with exported user functions
+
+type _Args[T = object] = tuple[T, ...]
+type _Kwargs[T = object] = dict[str, T]
+type _ArgsKwargs[AT = object, KT = object] = tuple[_Args[AT], _Kwargs[AT]]
+type _Coroutine[T = object] = Coroutine[None, None, T]
+type _CoroutineFunction[T = object] = Callable[..., _Coroutine[T]]
+type _CallableOrCoroutine[T = object] = Callable[..., T | _Coroutine[T]]
+type _Time = float | int
+type _Timed[T] = Mapping[str, str | _Time | T]
+
+_BasicTypes: TypeAlias = Real | str | Buffer | None  # Using `type` breaks `isinstance()`
+_Transferable: TypeAlias = _BasicTypes | Iterable  # type: ignore[type-arg]  # Using `type` or adding `[Any]` breaks `isinstance()`  # noqa: UP040
+
 _NAME = ''
 
 __EXPORT__: Final[str] = '__export__'
@@ -149,21 +137,6 @@ _CONNECT_RESPONSE: Final[str] = _WORKERLIB_PREFIX + 'connectResponse'
 
 _TAG_ATTR = 'tag'
 _NAME_ATTR = 'name'
-
-_adapters: Sequence[_Adapter] = ()
-
-__export__: Sequence[str]
-
-__all__: Sequence[str] = (  # This is for static checkers, in runtime it will be reduced depending on context
-    'Worker',
-    'anyCall',
-    'connectToWorker',
-    'diagnostics',
-    'elapsedTime',
-    'export',
-    'systemVersions',
-    'typechecked',
-)
 
 @typechecked
 def _log(*args: object) -> None:
@@ -216,89 +189,200 @@ def _importModule(moduleName: str | None) -> ModuleType:
     return import_module(moduleName)
 
 @typechecked
-def _importFromModule(module: str | ModuleType, qualNames: str | Iterable[str]) -> Iterator[object]:
+def _importFromModule(module: str | ModuleType, names: str | Iterable[str]) -> Iterator[object]:
     """
-    Imports the specified `qualNames` from the specified `module`.
+    Imports the specified `names` from the specified `module`.
 
     `module` can be either a string or a module object.
 
-    `qualNames` can be a string or an iterable of strings.
+    `names` can be a string or an iterable of strings.
 
     Returns an `Iterator` of imported objects.
     """
     if isinstance(module, str):  # ToDo: Find a way to import from '.' – user's module; see `target` in `export()`
         module = _importModule(module)
-    if isinstance(qualNames, str):
-        qualNames = (qualNames,)
-    if printNames := [n for n in qualNames if '.' in n or (n not in _BUILTIN_SPECIALS and (module.__name__ == _BUILTINS or n not in _builtins))]:
+    if isinstance(names, str):
+        names = (names,)
+    if printNames := [n for n in names if '.' in n or (n not in _BUILTIN_SPECIALS and (module.__name__ == _BUILTINS or n not in _builtins))]:
         _log(f"Importing from module {'workerlib' if module.__name__ == __name__ else module.__name__}: {', '.join(printNames)}")
-    for qualName in qualNames:
-        assert isinstance(qualName, str)
-        if '.' not in qualName:
-            if (y := _BUILTIN_SPECIALS.get(qualName, _DEFAULT)) != _DEFAULT:
+
+    for name in names:
+        y: object
+        if '.' not in name:
+            if (y := _BUILTIN_SPECIALS.get(name, _DEFAULT)) != _DEFAULT:
                 yield y
                 continue
-            if (y := _builtins.get(qualName, _DEFAULT)) != _DEFAULT:
+            if (y := _builtins.get(name, _DEFAULT)) != _DEFAULT:
                 yield y
                 continue
-        obj = module
-        for name in qualName.split('.'):
-            obj = getattr(obj, name)
-        yield obj
+        y = module
+        for n in name.split('.'):
+            y = getattr(y, n)
+        yield y
 
 @typechecked
-def _adaptersFromSequence(module: ModuleType, names: Sequence[str] | Sequence[Sequence[str]], allowSubSequences: bool = True) -> Iterator[_Adapter]:
-    """
-    Given a `module` and an adapter description triple
-    `["className", "encoderName", "decoderName"]`
-    or a sequence of them,
-    returns `Iterator` of adapter triples
-    `[typeObject, encoderFunction, decoderFunction]`.
-    """
-    if not isinstance(names, Sequence):
-        _error(f"Bad adapter descriptor type for module {module.__name__}, must be a sequence, got {type(names)}")
-    if not names:
-        _error(f"Empty adapter descriptor for module {module.__name__}")
-    if isinstance(names[0], str):
-        if len(names) != 3:
+class _AnyCallArg(TypedDict):
+    funcName: ReadOnly[str]
+    args: ReadOnly[Sequence[object]]
+    kwargs: ReadOnly[Mapping[str, object]]
+
+@typechecked
+class _Adapter:  # ToDo: Find a way to declare a "total" adapter for total pickle
+
+    type _AdapterEncoding = Mapping[str, object]
+    type _EncoderType[T = object] = Callable[[T], object | _Coroutine[object]] | None
+    type _DecoderType[T = object] = Callable[[object], T | _Coroutine[T]] | Callable[[object, str], T | _Coroutine[T]]
+
+    cls: type
+    encoder: _EncoderType
+    decoder: _DecoderType
+
+    firstAdapters: ClassVar[dict[str, '_Adapter']] = {}  # Should be checked before collections, e.g., `Enum`
+    secondAdapters: ClassVar[dict[str, '_Adapter']] = {}  # Should be checked after collections, e.g., custom classes and `object`
+
+    def __init__[T](self, cls: type[T], encoder: _EncoderType[T], decoder: _DecoderType[T] | None) -> None:  # pylint: disable=redefined-outer-name
+        if encoder:
+            encoderParams = signature(encoder).parameters.values()
+            if not (numEncoderArguments := sum(1 for p in encoderParams if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD, p.VAR_POSITIONAL))):
+                _error(f"Adapter encoder for type {self.cls} accepts no positional arguments: {self.encoder}")
+            if numEncoderArguments > 1:
+                if (n := sum(1 for p in encoderParams if p.kind == p.POSITIONAL_ONLY)) > 1:  # ToDo: create function
+                    _error(f"Adapter encoder for type {self.cls} has too many positional arguments: {self.encoder}, expected 1, got {n}")
+
+        if decoder is None:
+            decoder = cls
+
+        decoderParams = signature(decoder).parameters.values()
+        if not (numDecoderArguments := sum(1 for p in decoderParams if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD, p.VAR_POSITIONAL))):
+            _error(f"Adapter decoder for type {cls} accepts no positional arguments: {decoder}")
+        if numDecoderArguments > 1:
+            if (n := sum(1 for p in decoderParams if p.kind == p.POSITIONAL_ONLY)) > 2:
+                _error(f"Adapter decoder for type {cls} has too many positional arguments: {decoder}, expected 1 or 2, got {n}")
+
+        self.cls = cls
+        self.adapterName = _fullName(cls)
+        self.encoder = encoder  # type: ignore[assignment]
+        self.decoder = decoder
+        self.numDecoderArguments = numDecoderArguments
+
+        _log(f"Adapter created: {cls} => {encoder} => {decoder}")
+
+    async def _encode(self, obj: object) -> _AdapterEncoding | None:
+        if not isinstance(obj, self.cls):
+            return None
+        if self.encoder:  # noqa: SIM108  # pylint: disable=consider-ternary-expression
+            value = await self.encoder(obj) if iscoroutinefunction(self.encoder) else self.encoder(obj)
+        else:
+            value = obj  # Trying to pass the object as is, hoping it would work, like it does for `Enum`s
+        return {
+            _ADAPTER_MARKER: self.adapterName,  # This is NOT the name of the type of object being encoded, but the name of the adapter thas has to be used to decode the object on the other side
+            _ADAPTER_FULLNAME: _fullName(obj),  # This is the actual name of the type being transferred, but it's rarely used in decoding
+            _ADAPTER_VALUE: value,
+        }
+
+    async def _decode(self, obj: object, fullName: str) -> object:
+        if self.numDecoderArguments > 1:
+            # If the decoder accepts two arguments, pass `fullName` as a second argument to give the decoder a chance to reconstruct an object precisely
+            return await self.decoder(obj, fullName) if iscoroutinefunction(self.decoder) else self.decoder(obj, fullName)  # type: ignore[call-arg]
+        return await self.decoder(obj) if iscoroutinefunction(self.decoder) else self.decoder(obj)  # type: ignore[call-arg]
+
+    @classmethod
+    async def _checkAndEncode(cls, adapters: Mapping[str, Self], obj: object) -> _AdapterEncoding | None:
+        for adapter in adapters.values():
+            if ret := await adapter._encode(obj):  # pylint: disable=protected-access
+                return ret
+        return None
+
+    @classmethod
+    async def checkAndEncodeFirst(cls, obj: object) -> _AdapterEncoding | None:
+        return await cls._checkAndEncode(cls.firstAdapters, obj)
+
+    @classmethod
+    async def checkAndEncodeSecond(cls, obj: object) -> _AdapterEncoding | None:
+        return await cls._checkAndEncode(cls.secondAdapters, obj)
+
+    @classmethod
+    async def findAndDecode(cls, obj: Mapping[object, object]) -> object:
+        if not (adapterName := cast(str | None, obj.get(_ADAPTER_MARKER))):
+            return obj
+        if adapterName == _START_TIME_ADAPTER:
+            return obj  # It's not an adapter, but a similar format used to measure duration of data transfer
+        fullName = cast(str, obj[_ADAPTER_FULLNAME])
+        value = obj[_ADAPTER_VALUE]
+
+        if adapter := cls.firstAdapters.get(adapterName) or cls.secondAdapters.get(adapterName):  # It must be exact equality check, not `isinstance()`; the idea is to find the adapter that encoded this data – no more, no less
+            return await adapter._decode(value, fullName)  # pylint: disable=protected-access
+
+        # The data EXPLICITLY requests an adapter, so the unconverted object is definitely not expected
+        _error(f"No adapter found to decode class '{adapterName}'")
+
+    @classmethod
+    def _fromModule(cls, module: ModuleType, names: Sequence[str]) -> Self:  # ToDo: Find a way to import from '.' – user's module; see `target` in `export()`
+        """
+        Imports the specified `qualNames` from the specified `module`.
+
+        Returns an `_Adapter` instance constructed from imported objects.
+        """
+        if len(names) < 1 or len(names) > 3:
             _error(f"""Bad adapter descriptor for module {module.__name__}, must be '["className", "encoderFunction", "decoderFunction"]', got {names!r}""")
-        (cls, encoder, decoder) = _importFromModule(module, cast(Sequence[str], names))  # ToDo: Create separate importer (or wrapper around importer?) for adapters
+        args = list(_importFromModule(module, names))
+        _cls = args[0]
+        encoder = args[1] if len(args) > 1 else None
+        decoder = args[2] if len(args) > 2 else None
+
         if encoder == _PICKLE:
             encoder = pickleDump
         if decoder == _PICKLE:
             decoder = pickleLoad
-        if not isclass(cls):
-            _error(f'Bad adapter class "{names[0]}" for module {module.__name__}, must be a type, got {type(cls)}')
+
+        if not isclass(_cls):
+            _error(f'Bad adapter class "{names[0]}" for module {module.__name__}, must be a type, got {type(_cls)}')
         if not (encoder is None or callable(encoder)):
             _error(f'Bad adapter encoder "{names[1]}" for module {module.__name__}, must be a function/coroutine/None, got {type(encoder)}')
         if not (decoder is None or callable(decoder)):
-            _error(f'Bad adapter encoder "{names[2]}" for module {module.__name__}, must be a function/coroutine/None, got {type(decoder)}')
-        if decoder is None:
-            decoder = cls
-        _log(f"Adapter created: {decoder} => {cls} => {encoder}")
-        yield (cls, encoder, decoder)
-    elif allowSubSequences:
-        for subSequence in names:
-            yield from _adaptersFromSequence(module, subSequence, allowSubSequences = False)
-    else:
-        _error("Adapter specification should be either [strings] or [[strings], …], the third level of inclusion is not needed")
+            _error(f'Bad adapter decoder "{names[2]}" for module {module.__name__}, must be a function/coroutine/None, got {type(decoder)}')
 
-@typechecked
-def _importAdapters() -> None:  # ToDo: Create _Adapter class
-    """
-    Reads `[adapters]` config section, imports the necessary modules
-    and functions, and makes them available as the global `_adapters` list.
-    """
-    global _adapters  # noqa: PLW0603  # pylint: disable=global-statement
-    if _adapters:
-        return  # Initialize adapters only once
-    if not (mapping := config.get(_ADAPTERS_SECTION)):
-        return
-    adapters: list[_Adapter] = []
-    for (moduleName, names) in mapping.items():
-        module = _importModule(moduleName)
-        adapters.extend(_adaptersFromSequence(module, names))
-    _adapters = tuple(adapters)
+        return cls(_cls, encoder, decoder)
+
+    @classmethod
+    def _fromSequence(cls,
+                      module: ModuleType,
+                      names: Sequence[str] | Sequence[Sequence[str]],
+                      allowSubSequences: bool = True) \
+            -> Iterator[Self]:
+        """
+        Given a `module` and an adapter descriptor triple
+        `["className", "encoderName", "decoderName"]`
+        or a sequence of them,
+        returns `Iterator` of `_Adapter` instances constructed from imported objects.
+        """
+        if not isinstance(names, Sequence):
+            _error(f"Bad adapter descriptor type for module {module.__name__}, must be a sequence, got {type(names)}")
+        if not names:
+            _error(f"Empty adapter descriptor for module {module.__name__}")
+        if isinstance(names[0], str):
+            yield cls._fromModule(module, cast(Sequence[str], names))
+        elif allowSubSequences:
+            for subSequence in names:
+                yield from cls._fromSequence(module, subSequence, allowSubSequences = False)
+        else:
+            _error("Adapter specification should be either [strings] or [[strings], …], the third level of inclusion is not needed")
+
+    @classmethod
+    def fromConfig(cls) -> None:
+        """
+        Reads `[adapters]` config section, imports the necessary modules
+        and functions, and makes them available as the global `_adapters` list.
+        """
+        if cls.firstAdapters or cls.secondAdapters:
+            return  # Initialize adapters only once
+        if not (mapping := cast(Mapping[str, Sequence[str]], config.get(_ADAPTERS_SECTION))):
+            return  # No adapters defined in config
+        for (moduleName, names) in mapping.items():
+            module = _importModule(moduleName)
+            for adapter in cls._fromSequence(module, names):
+                m = cls.firstAdapters if issubclass(adapter.cls, _Transferable) else cls.secondAdapters
+                m[adapter.adapterName] = adapter
 
 @typechecked
 async def _to_js(obj: object) -> object:
@@ -308,36 +392,17 @@ async def _to_js(obj: object) -> object:
     Recurses into collections, uses adapters, and makes every effort possible
     to produce a transferable result.
     """
-    for (cls, encoder, _decoder) in _adapters:  # Trying adapters that are more specific than transferable types, e.g., `Enums`s
-        if issubclass(cls, _Transferable) and isinstance(obj, cls):  # ToDo: Make two lists (?) of adapters, to check before and after _Transferable
-            if encoder:  # noqa: SIM108
-                value = await encoder(obj) if iscoroutinefunction(encoder) else encoder(obj)
-            else:
-                value = obj  # Trying to pass the object as is, hoping it would work, like it does for `Enum`s
-            return {
-                _ADAPTER_MARKER: _fullName(cls),  # Encoded class name is NOT the name of the type of object being encoded, but the name of the adapter thas has to be used to decode the object on the other side
-                _ADAPTER_FULLNAME: _fullName(obj),  # This is the actual name of the type being transferred, but it is for informational and debugging purposes only and usually is not used for decoding
-                _ADAPTER_VALUE: value
-            }
+    if ret := await _Adapter.checkAndEncodeFirst(obj):
+        return ret
     if isinstance(obj, _BasicTypes):
         return obj  # Save it from being converted to `tuple` as an `Iterable`
     if isinstance(obj, Mapping):  # Should be checked before `Iterable`, as `Mapping` is an `Iterable` too
         return {k: v for (k, v) in await gather(*(gather(*(_to_js(x) for x in k_v)) for k_v in obj.items()))}  # ToDo: make functions for these  # pylint: disable=unnecessary-comprehension
     if isinstance(obj, Iterable):
         return await gather(*(_to_js(v) for v in obj))
-    for (cls, encoder, _decoder) in _adapters:  # Trying adapters that are less specific than transferable types – i.e., `object`
-        if isinstance(obj, cls):
-            if encoder:  # noqa: SIM108
-                value = await encoder(obj) if iscoroutinefunction(encoder) else encoder(obj)
-            else:
-                value = obj  # Trying to pass the object as is, hoping it would work, like it does for `Enum`s
-            return {
-                _ADAPTER_MARKER: _fullName(cls),  # Encoded class name is NOT the name of the type of object being encoded, but the name of the adapter thas has to be used to decode the object on the other side
-                _ADAPTER_FULLNAME: _fullName(obj),  # This is the actual name of the type being transferred, but it is for informational and debugging purposes only and usually is not used for decoding
-                _ADAPTER_VALUE: value
-            }
-    if not isinstance(obj, _Transferable):
-        _log(f"WARNING: No adapter found for class {type(obj)}, and transport layer (JavaScript structured clone) would probably not accept it as is, see https://developer.mozilla.org/docs/Web/API/Web_Workers_API/Structured_clone_algorithm")
+    if ret := await _Adapter.checkAndEncodeSecond(obj):
+        return ret
+    _log(f"WARNING: No adapter found for class {type(obj)}, and transport layer (JavaScript structured clone) would probably not accept it as is, see https://developer.mozilla.org/docs/Web/API/Web_Workers_API/Structured_clone_algorithm")
     return obj  # Trying to pass the object as is, hoping it would work
 
 @typechecked
@@ -355,26 +420,10 @@ async def _to_py(obj: object) -> object:
     if not isinstance(obj, Mapping):
         if isinstance(obj, Iterable):
             return tuple(await gather(*(_to_py(v) for v in obj)))
-        return obj
+        return obj  # Not `Iterable`
     # isinstance(obj, Mapping)
     obj = {k: v for (k, v) in await gather(*(gather(*(_to_py(x) for x in k_v)) for k_v in obj.items()))}  # pylint: disable=unnecessary-comprehension
-
-    # Checking for adapter
-    if not (adapterName := obj.get(_ADAPTER_MARKER)):
-        return obj
-    if adapterName == _START_TIME_ADAPTER:
-        return obj
-    fullName = cast(str, obj[_ADAPTER_FULLNAME])
-    value = obj[_ADAPTER_VALUE]
-
-    for (cls, _encoder, decoder) in _adapters:  # ToDo: Make `_adapters` into a dict to fasten this search
-        if _fullName(cls) == adapterName:  # It must be exact equality check, not `isinstance()`; the idea is to find the adapter that encoded this data, no more, no less
-            if len([p for p in signature(decoder).parameters.values() if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]) > 1:
-                # If the decoder accepts more than one argument, pass `fullName` as a second argument to give the decoder a chance to reconstruct an object precisely
-                return await decoder(value, fullName) if iscoroutinefunction(decoder) else decoder(value, fullName)  # type: ignore[call-arg]
-            return await decoder(value) if iscoroutinefunction(decoder) else decoder(value)  # type: ignore[call-arg]
-    # The data EXPLICITLY requests an adapter, so the unconverted object is definitely not expected
-    _error(f"No adapter found to decode class '{adapterName}'")
+    return await _Adapter.findAndDecode(obj)
 
 @typechecked
 def _diagnostics() -> Sequence[str]:
@@ -438,6 +487,19 @@ Mapping of system components and their detected runtime versions
 (PyScript, Pyodide, Python, Emscripten).
 May be useful for diagnostic purposes.
 """
+
+__export__: Sequence[str]
+
+__all__: Sequence[str] = (  # This is for static checkers, in runtime it will be reduced depending on the context
+    'Worker',
+    'anyCall',
+    'connectToWorker',
+    'diagnostics',
+    'elapsedTime',
+    'export',
+    'systemVersions',
+    'typechecked',
+)
 
                        ##
 if RUNNING_IN_WORKER:  ##
@@ -509,8 +571,8 @@ if RUNNING_IN_WORKER:  ##
 
         Prints diagnostic messages to the console before and after the call.
         """
-        @wraps(func)
         @typechecked
+        @wraps(func)
         async def workerLoggedWrapper(*args: object, **kwargs: object) -> _Timed[T]:
             try:
                 elapsed = elapsedTime(cast(_Time, argStartTime)) if (argStartTime := kwargs.pop(_START_TIME_ADAPTER, None)) else ''
@@ -554,8 +616,8 @@ if RUNNING_IN_WORKER:  ##
     @typechecked  # Public API
     async def anyCall(funcNameAndArgs: _AnyCallArg) -> object:
         funcName = funcNameAndArgs['funcName']
-        args = funcNameAndArgs.get('args', ())
-        kwargs = funcNameAndArgs.get('kwargs', {})
+        args = funcNameAndArgs['args']
+        kwargs = funcNameAndArgs['kwargs']
         if not (func := globals().get(funcName)):
             _error(f"Function '{funcName}()' is not found in the worker")
         if not callable(func):
@@ -599,7 +661,7 @@ if RUNNING_IN_WORKER:  ##
         target = _getframe(1).f_globals  # globals of the calling module
 
         _imports(target)  # ToDo: Call it only once!!
-        _importAdapters()  # Importing adapters late so that potential errors would not interrupt startup too early
+        _Adapter.fromConfig()  # Importing adapters late so that potential errors would not interrupt startup too early
 
         target[_connectFromMain.__name__] = _connectFromMain
         exportNames: list[str] = []
@@ -623,13 +685,13 @@ if RUNNING_IN_WORKER:  ##
         Wraps and exports functions listed in the config.
         """
         _imports()
-        _importAdapters()
+        _Adapter.fromConfig()
 
         exportNames = [_connectFromMain.__name__,]
         target = globals()
 
         if mapping := config.get(_EXPORTS_SECTION):
-            for (moduleName, funcNames) in mapping.items():
+            for (moduleName, funcNames) in mapping.items():  # ToDo: Create function
                 for (funcName, func) in zip(funcNames, _importFromModule(moduleName, funcNames), strict = True):
                     if not callable(func):
                         _error(f'Bad exported function "{funcName}", must be a class/function/coroutine, got {type(func)}')
@@ -666,6 +728,18 @@ else:  ##  MAIN THREAD
     from pyscript import workers  # pylint: disable=ungrouped-imports
 
     _NAME = "main"
+
+    @typechecked
+    class _AnyCall:
+        def __init__(self, wrappedAnyCallCoroutine: _CoroutineFunction) -> None:
+            self.anyCallCoroutine = wrappedAnyCallCoroutine
+
+        async def __call__(self, funcName: str, *args: object, **kwargs: object) -> object:
+            funcNameAndArgs = _AnyCallArg(funcName = funcName, args = args, kwargs = kwargs)
+            return await self.anyCallCoroutine(funcNameAndArgs)
+
+        def __getattr__(self, funcName: str) -> _CoroutineFunction:
+            return partial(self.__call__, funcName)
 
     @typechecked  # Public API
     class Worker:
@@ -732,20 +806,8 @@ else:  ##  MAIN THREAD
         """Wraps an exported function with all the necessary decorators."""
         return _mainLogged(_mainSerialized(func, looksLike))
 
-    @typechecked
-    class _AnyCall:
-        def __init__(self, wrappedAnyCallCoroutine: _CoroutineFunction) -> None:
-            self.anyCallCoroutine = wrappedAnyCallCoroutine
-
-        async def __call__(self, funcName: str, *args: object, **kwargs: object) -> object:
-            funcNameAndArgs = _AnyCallArg(funcName = funcName, args = args, kwargs = kwargs)
-            return await self.anyCallCoroutine(funcNameAndArgs)
-
-        def __getattr__(self, funcName: str) -> _CoroutineFunction:
-            return partial(self.__call__, funcName)
-
     @typechecked  # Public API
-    async def connectToWorker(workerName: str | None = None) -> Worker:
+    async def connectToWorker(workerName: str | None = None) -> Worker:  # ToDo: Refactor it somehow to be compatible with other languages
         """
         Connects to a named worker with the specified `name`.
         That worker would use this `name` as a prefix to console logging messages.
@@ -757,10 +819,12 @@ else:  ##  MAIN THREAD
         """
         if workerName:
             elements = page.find(f'script[type="py"][worker][name={workerName}]')
-            element = elements[0] if elements else None
+            if not (element := elements[0] if elements else None):
+                _log(f'WARNING: Could not find a worker named "{workerName}" in DOM')
         else:
             if not (elements := page.find('script[type="py"][worker][name]')):
-                _error("Could not find any named workers in DOM")
+                pyScripts = '\n'.join(tag.outerHTML for tag in page.find('script[type="py"]'))  # ToDo: Create constant?
+                _error(f"Could not find any named workers in DOM{', only found the following PyScript tags:\n' + pyScripts if pyScripts else ''}")
             if len(elements) > 1:
                 _error(f"Found the following named workers in DOM: {', '.join([element.getAttribute(_NAME_ATTR) for element in elements])}; which one to connect to?..")
             element = elements[0]
@@ -774,11 +838,14 @@ else:  ##  MAIN THREAD
                 assert isinstance(value, str), type(value)
                 attributes[attributeName] = value
 
+            assert not workerName or workerName == attributes[_NAME_ATTR], (workerName, attributes[_NAME_ATTR])
+
         if not workerName:
             workerName = attributes[_NAME_ATTR]
+
         assert workerName
 
-        _importAdapters()
+        _Adapter.fromConfig()
 
         _log(f'Looking for a worker named "{workerName}"')
         # vv WRAPPED CALL vv
