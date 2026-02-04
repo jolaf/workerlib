@@ -18,6 +18,7 @@ from types import ModuleType
 from typing import cast, final, ClassVar, Final, Literal, NoReturn, ReadOnly, Self, TypeAlias, TypedDict, Union
 
 from pyscript import config, RUNNING_IN_WORKER  # Yes, this module is indeed PyScript-only and won't work outside the browser
+from js import console  # Doesn't require CORS to work
 
 try:  # Getting CPU count
     from os import process_cpu_count
@@ -147,6 +148,11 @@ _NAME_ATTR = 'name'
 def _log(*args: object) -> None:
     """Logs a message to the console."""
     print(f"[{_NAME}]", *args)
+
+@typechecked
+def _warn(*args: object) -> None:
+    """Logs a warning message to the console."""
+    console.warn(f"[{_NAME}]", *args)
 
 @typechecked
 def _error(message: str) -> NoReturn:
@@ -455,7 +461,7 @@ async def _to_js(obj: object) -> object:
         return await _gatherList(_to_js, obj)
     if (ret := await _Adapter.encodeSecond(obj)) != _DEFAULT:
         return ret
-    _log(f"WARNING: No adapter found for class {type(obj)}, and transport layer (JavaScript structured clone) would probably not accept it as is, see https://developer.mozilla.org/docs/Web/API/Web_Workers_API/Structured_clone_algorithm")
+    _warn(f"No adapter found for class {type(obj)}, and transport layer (JavaScript structured clone) would probably not accept it as is, see https://developer.mozilla.org/docs/Web/API/Web_Workers_API/Structured_clone_algorithm")
     return obj  # Trying to pass the object as is, hoping it would work
 
 @typechecked
