@@ -15,7 +15,7 @@ from re import search
 from sys import flags, modules, platform, version as _pythonVersion
 from time import time
 from types import ModuleType
-from typing import cast, final, ClassVar, Final, NoReturn, ReadOnly, Self, TypeAlias, TypedDict, Union
+from typing import cast, final, ClassVar, Final, Literal, NoReturn, ReadOnly, Self, TypeAlias, TypedDict, Union
 
 from pyscript import config, RUNNING_IN_WORKER  # Yes, this module is indeed PyScript-only and won't work outside the browser
 
@@ -267,7 +267,7 @@ class _Adapter:
 
     type _EncoderType[T = object] = Callable[[T], object | _Coroutine[object]] | None
     type _DecoderType[T = object] = Callable[[object], T | _Coroutine[T]] | Callable[[object, str | None], T | _Coroutine[T]]
-    type _AdapterEncoding = Mapping[str, object] | object | None
+    type _AdapterEncoding = Mapping[str, object] | object | Literal["__default"]
 
     cls: type
     encoder: _EncoderType
@@ -305,11 +305,11 @@ class _Adapter:
         self.decoder = decoder
         self.numDecoderArguments = numDecoderArguments
 
-        _log(f"Adapter created: {cls} => {encoder} => {decoder}")  # ToDo: print full names instead
+        _log(f"Adapter created: {_fullName(cls)} => {_fullName(encoder) + '()' if encoder else None} => {_fullName(decoder) + '()' if decoder else None}")
 
     async def _encode(self, obj: object) -> _AdapterEncoding:
         if not self.isTotal and not isinstance(obj, self.cls):
-            return None
+            return _DEFAULT
         if self.encoder:  # noqa: SIM108  # pylint: disable=consider-ternary-expression
             value = await self.encoder(obj) if iscoroutinefunction(self.encoder) else self.encoder(obj)
         else:
@@ -329,25 +329,25 @@ class _Adapter:
         return await self.decoder(obj) if iscoroutinefunction(self.decoder) else self.decoder(obj)  # type: ignore[call-arg]
 
     @classmethod
-    async def _checkAndEncode(cls, adapters: Mapping[str, Self], obj: object) -> _AdapterEncoding:
+    async def _findAndEncode(cls, adapters: Mapping[str, Self], obj: object) -> _AdapterEncoding:
         for adapter in adapters.values():
-            if ret := await adapter._encode(obj):  # pylint: disable=protected-access
+            if (ret := await adapter._encode(obj)) != _DEFAULT:  # pylint: disable=protected-access
                 return ret
-        return None
+        return _DEFAULT
 
     @classmethod
     async def encodeFirst(cls, obj: object) -> _AdapterEncoding:
         if cls.totalAdapter:
             return await cls.totalAdapter._encode(obj)  # pylint: disable=protected-access
-        return await cls._checkAndEncode(cls.firstAdapters, obj)
+        return await cls._findAndEncode(cls.firstAdapters, obj)
 
     @classmethod
     async def encodeSecond(cls, obj: object) -> _AdapterEncoding:
-        return await cls._checkAndEncode(cls.secondAdapters, obj)
+        return await cls._findAndEncode(cls.secondAdapters, obj)
 
     @classmethod
-    async def decodeFirst(cls, obj: object) -> object | None:
-        return cls.totalAdapter and await cls.totalAdapter._decode(obj)  # pylint: disable=protected-access
+    async def decodeFirst(cls, obj: object) -> object | Literal["__default"]:
+        return await cls.totalAdapter._decode(obj) if cls.totalAdapter else _DEFAULT  # pylint: disable=protected-access
 
     @classmethod
     async def decodeSecond(cls, obj: Mapping[object, object]) -> object:
@@ -358,7 +358,7 @@ class _Adapter:
         fullName = cast(str, obj[_ADAPTER_FULLNAME])
         value = obj[_ADAPTER_VALUE]
 
-        if adapter := cls.firstAdapters.get(adapterName) or cls.secondAdapters.get(adapterName):  # It must be exact equality check, not `isinstance()`; the idea is to find the adapter that encoded this data – no more, no less
+        if adapter := (cls.firstAdapters.get(adapterName) or cls.secondAdapters.get(adapterName)):  # It must be exact equality check, not `isinstance()`; the idea is to find the adapter that encoded this data – no more, no less
             return await adapter._decode(value, fullName)  # pylint: disable=protected-access
 
         # The data EXPLICITLY requests an adapter, so the unconverted object is definitely not expected
@@ -445,7 +445,7 @@ async def _to_js(obj: object) -> object:
     Recurses into collections, uses adapters, and makes every effort possible
     to produce a transferable result.
     """
-    if (ret := await _Adapter.encodeFirst(obj)) is not None:
+    if (ret := await _Adapter.encodeFirst(obj)) != _DEFAULT:
         return ret
     if isinstance(obj, _BasicTypes):
         return obj  # Save it from being converted to `tuple` as an `Iterable`
@@ -453,7 +453,7 @@ async def _to_js(obj: object) -> object:
         return await _gatherMap(_to_js, obj)
     if isinstance(obj, Iterable):
         return await _gatherList(_to_js, obj)
-    if (ret := await _Adapter.encodeSecond(obj)) is not None:
+    if (ret := await _Adapter.encodeSecond(obj)) != _DEFAULT:
         return ret
     _log(f"WARNING: No adapter found for class {type(obj)}, and transport layer (JavaScript structured clone) would probably not accept it as is, see https://developer.mozilla.org/docs/Web/API/Web_Workers_API/Structured_clone_algorithm")
     return obj  # Trying to pass the object as is, hoping it would work
@@ -468,7 +468,7 @@ async def _to_py(obj: object) -> object:
     """
     if hasattr(obj, 'to_py'):  # JsProxy
         return await _to_py(obj.to_py())
-    if (ret := await _Adapter.decodeFirst(obj)) is not None:
+    if (ret := await _Adapter.decodeFirst(obj)) != _DEFAULT:
         return ret
     if isinstance(obj, _BasicTypes):
         return obj  # Save it from being converted to `tuple` as an `Iterable`
@@ -582,35 +582,13 @@ if RUNNING_IN_WORKER:  ##
         """
         @wraps(func)
         @typechecked
-        async def workerSerializedWrapper(*args: object, **kwargs: object) -> object:
-            @typechecked
-            def extractKwargs(*args: object) -> _ArgsKwargs:
-                """
-                If the last of `args` is a `Mapping`, check whether it is possible
-                for that to be the `kwargs` for the `func`. If so, extract it.
-
-                Returns `(args, kwargs)` tuple to be used for calling `func`.
-                """
-                argsOnly: _ArgsKwargs = (args, {})
-                if not args:
-                    return argsOnly
-                lastArg = args[-1]
-                if not isinstance(lastArg, Mapping):
-                    return argsOnly
-                argsKwargs = cast(_ArgsKwargs, (args[:-1], lastArg))
-                if _START_TIME_ADAPTER in lastArg:
-                    return argsKwargs
-                if not all(isinstance(key, str) for key in lastArg):
-                    return argsOnly
-                if _countArgs(func, P.VAR_KEYWORD):
-                    return argsKwargs  # If `func` has a `**kwargs` argument, any `str`-keyed dictionary would fit
-                paramNames = set(_getArgNames(func, P.POSITIONAL_OR_KEYWORD, P.KEYWORD_ONLY))
-                return argsKwargs if all(argName in paramNames for argName in lastArg) else argsOnly  # If `func` accepts keyword arguments, make sure all the keys in `lastArg` are among them
-
+        async def workerSerializedWrapper(*args_: object, **kwargs: object) -> object:
             assert not kwargs  # `kwargs` get passed to workers as the last of `args`, of type `dict`
-            print('###', args)
-            args = cast(_Args, await _to_py(args))
-            (args, kwargs) = extractKwargs(*args)  # If `func` accepts keyword arguments, extract them from the last of `args`
+            assert args_
+            args: Sequence[object]
+            (args, kwargs) = (args_[:-1], cast(dict[str, object], cast(JsProxy, args_[-1]).to_py()))
+            assert isinstance(kwargs, Mapping)
+            (args, kwargs) = await gather(_gatherList(_to_py, args), _gatherValues(_to_py, kwargs))
             # vv WRAPPED CALL vv
             ret = await func(*args, **kwargs) if iscoroutinefunction(func) else func(*args, **kwargs)  # ToDo: Catch and send exception?? Or at least catch in main?
             # ^^ WRAPPED CALL ^^
