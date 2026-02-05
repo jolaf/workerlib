@@ -179,7 +179,7 @@ def elapsedTime(startTime: _Time) -> str:  # noqa: PYI041  # beartype is right e
     return f"{round(dt)}s" if dt >= 1 else f"{round(dt * 1000)}ms"
 
 @typechecked
-def _fullName(obj: object) -> str:
+def fullName(obj: object) -> str:
     if not callable(obj):
         obj = type(obj)
     assert hasattr(obj, '__qualname__'), obj
@@ -312,12 +312,12 @@ class _Adapter:
                 _error(f"Adapter decoder for type {cls} has too many positional arguments: {decoder}, expected {'1' if self.isTotal else '1 or 2'}, got {n}")
 
         self.cls = cls
-        self.adapterName = _fullName(cls)
+        self.adapterName = fullName(cls)
         self.encoder = encoder  # type: ignore[assignment]
         self.decoder = decoder
         self.numDecoderArguments = numDecoderArguments
 
-        _log(f"Adapter created: {_fullName(cls)} => {_fullName(encoder) + '()' if encoder else None} => {_fullName(decoder) + '()' if decoder else None}")
+        _log(f"Adapter created: {fullName(cls)} => {fullName(encoder) + '()' if encoder else None} => {fullName(decoder) + '()' if decoder else None}")
 
     async def _encode(self, obj: object) -> _AdapterEncoding:
         if not self.isTotal and not isinstance(obj, self.cls):
@@ -328,16 +328,16 @@ class _Adapter:
             value = obj  # Trying to pass the object as is, hoping it would work, like it does for `Enum`s
         return value if self.isTotal else {
             _ADAPTER_MARKER: self.adapterName,  # This is NOT the name of the type of object being encoded, but the name of the adapter that has to be used to decode the object on the other side
-            _ADAPTER_FULLNAME: _fullName(obj),  # This is the actual name of the type being transferred, but it's rarely used in decoding
+            _ADAPTER_FULLNAME: fullName(obj),  # This is the actual name of the type being transferred, but it's rarely used in decoding
             _ADAPTER_VALUE: value,
         }
 
-    async def _decode(self, obj: object, fullName: str | None = None) -> object:
+    async def _decode(self, obj: object, name: str | None = None) -> object:
         if self.numDecoderArguments > 1:
             assert not self.isTotal
-            assert fullName
+            assert name
             # If the decoder accepts two arguments, pass `fullName` as a second argument to give the decoder a chance to reconstruct an object precisely
-            return await self.decoder(obj, fullName) if iscoroutinefunction(self.decoder) else self.decoder(obj, fullName)  # type: ignore[call-arg]
+            return await self.decoder(obj, name) if iscoroutinefunction(self.decoder) else self.decoder(obj, name)  # type: ignore[call-arg]
         return await self.decoder(obj) if iscoroutinefunction(self.decoder) else self.decoder(obj)  # type: ignore[call-arg]
 
     @classmethod
@@ -367,11 +367,11 @@ class _Adapter:
             return obj
         if adapterName == _START_TIME_ADAPTER:
             return obj  # It's not an adapter, but a similar format used to measure duration of data transfer
-        fullName = cast(str, obj[_ADAPTER_FULLNAME])
+        name = cast(str, obj[_ADAPTER_FULLNAME])
         value = obj[_ADAPTER_VALUE]
 
         if adapter := (cls.firstAdapters.get(adapterName) or cls.secondAdapters.get(adapterName)):  # It must be exact equality check, not `isinstance()`; the idea is to find the adapter that encoded this data – no more, no less
-            return await adapter._decode(value, fullName)  # pylint: disable=protected-access
+            return await adapter._decode(value, name)  # pylint: disable=protected-access
 
         # The data EXPLICITLY requests an adapter, so the unconverted object is definitely not expected
         _error(f"No adapter found to decode class '{adapterName}'")
@@ -563,6 +563,7 @@ __all__: Sequence[str] = (  # This is for static checkers, in runtime it will be
     'connectToWorker',
     'diagnostics',
     'elapsedTime',
+    'fullName',
     'export',
     'systemVersions',
     'typechecked',
@@ -638,7 +639,7 @@ if RUNNING_IN_WORKER:  ##
                 _log(f"Returned {elapsedTime(callStartTime)} from {func.__name__}(): {ret}")
                 return {
                     _ADAPTER_MARKER: _START_TIME_ADAPTER,
-                    _ADAPTER_FULLNAME: _fullName(ret),
+                    _ADAPTER_FULLNAME: fullName(ret),
                     _ADAPTER_VALUE: ret,
                     _START_TIME: time(),  # Starting calculating time it would take to transfer the return value to the main thread
                 }
@@ -812,6 +813,7 @@ if RUNNING_IN_WORKER:  ##
             'anyCall',
             'diagnostics',
             'elapsedTime',
+            'fullName',
             'export',
             'systemVersions',
             'typechecked',
@@ -969,6 +971,7 @@ else:  ##  MAIN THREAD
         'connectToWorker',
         'diagnostics',
         'elapsedTime',
+        'fullName',
         'systemVersions',
         'typechecked',
     )
