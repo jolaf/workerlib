@@ -160,9 +160,9 @@ _TAG_ATTR = 'tag'
 _NAME_ATTR = 'name'
 
 @typechecked
-def _log(*args: object) -> None:
+def _log(*args: object, **kwargs: Any) -> None:
     """Logs a message to the console."""
-    print(f"[{_NAME}]", *args)
+    print(f"[{_NAME}]", *args, flush = True, **kwargs)
 
 @typechecked
 def _warn(*args: object) -> None:
@@ -653,7 +653,7 @@ if RUNNING_IN_WORKER:  ##
                     _START_TIME: time(),  # Starting calculating time it would take to transfer the return value to the main thread
                 }
             except BaseException as ex:
-                _log(f"Exception at {func.__name__}: {ex}")
+                _log(f"Exception at {func.__name__}: {ex}", file = stderr)
                 raise
 
         return workerLoggedWrapper
@@ -803,7 +803,7 @@ if RUNNING_IN_WORKER:  ##
             exportNames.append(funcName)
 
         if len(exportNames) < 2:
-            _log("WARNING: no functions found to export, check `[exports]` section in the config")
+            _warn("No functions found to export, check `[exports]` section in the config")
 
         _targetModule.__export__ = tuple(exportNames)  # type: ignore[attr-defined]
         _log("Providing functions:", ', '.join(name for name in exportNames if name != _connectFromMain.__name__))
@@ -926,7 +926,7 @@ else:  ##  MAIN THREAD
         if workerName:
             elements = page.find(_PY_SCRIPT_WORKER + f'[name={workerName}]')
             if not (element := elements[0] if elements else None):
-                _log(f'WARNING: Could not find a worker named "{workerName}" in DOM')
+                _warn(f'Could not find a worker named "{workerName}" in DOM')
         else:
             if not (elements := page.find(_PY_SCRIPT_WORKER + '[name]')):
                 pyScripts = '\n'.join(tag.outerHTML for tag in page.find(_PY_SCRIPT))
