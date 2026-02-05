@@ -1,7 +1,7 @@
 #
 # Note: this library is intended for PyScript / Pyodide apps, it is useless outside the browser
 #
-# Tested on PyScript 26.1.1 / Pyodide 0.29.1 / Python 3.13.2
+# Tested on PyScript 26.2.1 / Pyodide 0.29.3 / Python 3.13.2
 #
 # pylint: disable=wrong-import-position
 #
