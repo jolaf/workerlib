@@ -94,6 +94,13 @@ try:  # Getting Pyodide version
 except ImportError:
     _pyodideVersion = "UNKNOWN"
 
+# We name all internal global stuff starting with `_` underscore to minimize the chance of a conflict with exported user functions
+
+type _Callable[T = object] = Callable[..., T]
+type _Coroutine[T = object] = Coroutine[None, None, T]
+type _CoroutineFunction[T = object] = _Callable[_Coroutine[T]]
+type _CallableOrCoroutine[T = object] = _Callable[T | _Coroutine[T]]
+
 try:  # To turn runtime typechecking on, add `"beartype"` to the `packages` array in your `workerlib.toml`
     from beartype import beartype as typechecked, __version__ as _beartypeVersion
     from beartype.roar import BeartypeException
@@ -104,15 +111,9 @@ except ImportError:
     def typechecked[T](func: _CallableOrCoroutine[T]) -> _CallableOrCoroutine[T]:  # type: ignore[no-redef]  # pylint: disable=redefined-outer-name
         return func
 
-# We name all internal global stuff starting with `_` underscore to minimize the chance of a conflict with exported user functions
-
 type _Args[T = object] = tuple[T, ...]
 type _Kwargs[T = object] = dict[str, T]
 type _ArgsKwargs[AT = object, KT = AT] = tuple[_Args[AT], _Kwargs[KT]]
-
-type _Coroutine[T = object] = Coroutine[None, None, T]
-type _CoroutineFunction[T = object] = Callable[..., _Coroutine[T]]
-type _CallableOrCoroutine[T = object] = Callable[..., T | _Coroutine[T]]
 
 type _Time = float | int
 type _Timed[T] = Mapping[str, str | _Time | T]
