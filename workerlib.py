@@ -3,6 +3,8 @@
 #
 # Tested on PyScript 26.1.1 / Pyodide 0.29.1 / Python 3.13.2
 #
+# pylint: disable=wrong-import-position
+#
 from asyncio import create_task, gather
 from collections.abc import Buffer, Callable, Coroutine, Iterable, Iterator, Mapping, Sequence
 from functools import partial, wraps
@@ -12,10 +14,13 @@ from itertools import chain
 from numbers import Real
 from pickle import dumps as pickleDump, loads as pickleLoad
 from re import search
-from sys import flags, modules, platform, version as _pythonVersion
+from sys import flags, modules, platform, version as _pythonVersion, version_info
 from time import time
 from types import ModuleType
 from typing import cast, final, ClassVar, Final, Literal, NoReturn, ReadOnly, Self, TypeAlias, TypedDict, Union
+
+if version_info < (3, 13):  # noqa: UP036
+    raise RuntimeError("This module requires Python 3.13+")
 
 from pyscript import config, RUNNING_IN_WORKER  # Yes, this module is indeed PyScript-only and won't work outside the browser
 
