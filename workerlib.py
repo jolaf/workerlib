@@ -259,8 +259,8 @@ def _importFromModule(module: str | ModuleType, names: str | Iterable[str]) -> I
         yield y
 
 @typechecked
-class _AnyCallArg(TypedDict):
-    funcName: ReadOnly[str]
+class _AnyCallArg(TypedDict, total = False):
+    funcName: Required[ReadOnly[str]]
     args: ReadOnly[Sequence[object]]
     kwargs: ReadOnly[Mapping[str, object]]
 
@@ -692,8 +692,8 @@ if RUNNING_IN_WORKER:  ##
         One exported function, one adapter – and everything works, and very fast.
         """
         funcName = funcNameAndArgs['funcName']
-        args = funcNameAndArgs['args']
-        kwargs = funcNameAndArgs['kwargs']
+        args = funcNameAndArgs.get('args', ())
+        kwargs = funcNameAndArgs.get('kwargs', {})
         if not (func := globals().get(funcName)):
             _error(f"Function '{funcName}()' is not found in the worker")
         if not callable(func):
