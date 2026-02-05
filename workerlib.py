@@ -5,7 +5,6 @@
 #
 # pylint: disable=wrong-import-position
 #
-from asyncio import create_task, gather
 try:
     from pyscript import config, RUNNING_IN_WORKER
 except ImportError as ex:
@@ -16,7 +15,9 @@ from sys import version_info
 if version_info < (3, 13):  # noqa: UP036
     raise RuntimeError("This module requires Python 3.13+")
 
+from asyncio import create_task, get_running_loop, gather, AbstractEventLoop
 from collections.abc import Buffer, Callable, Coroutine, Iterable, Iterator, Mapping, Sequence
+from contextlib import suppress
 from functools import partial, wraps
 from importlib import import_module
 from inspect import currentframe, getmodule, isclass, iscoroutinefunction, signature, Parameter as P, _ParameterKind
@@ -24,10 +25,13 @@ from itertools import chain
 from numbers import Real
 from pickle import dumps as pickleDump, loads as pickleLoad
 from re import search
+import sys
 from sys import flags, modules, platform, stderr, version as _pythonVersion
+import threading
 from time import time
-from types import ModuleType
-from typing import cast, final, ClassVar, Final, Literal, NoReturn, ReadOnly, Self, TypeAlias, TypedDict, Union
+from traceback import extract_tb, StackSummary
+from types import ModuleType, TracebackType  # noqa: TC003
+from typing import cast, final, Any, ClassVar, Final, Literal, NoReturn, ReadOnly, Required, Self, TypeAlias, TypedDict, Union
 
 if version_info < (3, 13):  # noqa: UP036
     raise RuntimeError("This module requires Python 3.13+")
@@ -502,6 +506,61 @@ async def _to_py(obj: object) -> object:
     return await _Adapter.decodeSecond(obj)
 
 @typechecked
+def improveExceptionHandling(displayFunc: Callable[..., Any] = partial(_log, file = stderr)) -> None:
+    stackSummary_format: Final[Callable[[StackSummary], list[str]]] = StackSummary.format
+    def patchedFormat(self: StackSummary) -> list[str]:  # Patching global traceback formatting routine
+        def showExec(line: str) -> str:
+            return '>>' + line[2:] if '<exec>' in line else line  # Make `<exec>` lines more visible
+        return [showExec(line.rstrip()) for line in stackSummary_format(self) if line and not line.isspace()]  # Fix Pyodide bug with inserting empty lines into traceback
+    StackSummary.format = patchedFormat  # type: ignore[method-assign]
+
+    @typechecked
+    def exceptionHandler(problem: str,
+                         exceptionType: type[BaseException | None] | None = None,
+                         exception: BaseException | None = None,
+                         traceback: TracebackType | None = None,
+                         ) -> None:
+        if exceptionType is None:
+            exceptionType = type(exception)
+        if traceback is None and exception:
+            traceback = exception.__traceback__
+        tracebackStr = '\nTraceback (most recent call last):\n' + '\n'.join(extract_tb(traceback).format()) if traceback else ''
+        displayFunc(f"\nERROR: {problem}, type {fullName(exceptionType)}:\n{exception}{tracebackStr}")
+
+    @typechecked
+    def mainExceptionHandler(exceptionType: type[BaseException] | None = None,
+                             exception: BaseException | None = None,
+                             traceback: TracebackType | None = None) -> None:
+        exceptionHandler("Uncaught exception in the main thread",
+                         exceptionType, exception, traceback)
+
+    @typechecked
+    def threadExceptionHandler(arg: Any) -> None:
+        exceptionHandler(f"Uncaught exception in thread {arg.thread}",
+                         arg.exc_type, arg.exc_value, arg.exc_traceback)
+
+    @typechecked
+    def loopExceptionHandler(_loop: AbstractEventLoop,
+                             context: dict[str, Any]) -> None:
+        exceptionHandler("Uncaught exception in async loop",
+                         exception = context.get('exception'))
+
+    # Setting `exceptionHandler()` to handle uncaught exceptions
+    sys.excepthook = mainExceptionHandler
+    threading.excepthook = threadExceptionHandler
+    with suppress(RuntimeError):
+        get_running_loop().set_exception_handler(loopExceptionHandler)
+
+    if not RUNNING_IN_WORKER:
+        # Now when uncaught exceptions are controlled, errors printed by default into DOM may be hidden
+        from pyscript import document  # pylint: disable=import-outside-toplevel
+        from js import CSSStyleSheet  # pylint: disable=import-outside-toplevel
+
+        styleSheet = CSSStyleSheet.new()
+        styleSheet.replaceSync('.py-error { display: None; }')
+        document.adoptedStyleSheets.push(styleSheet)
+
+@typechecked
 def _diagnostics() -> Sequence[str]:
     """
     Returns a `tuple` of strings with detailed diagnostics of system components
@@ -573,6 +632,7 @@ __all__: Sequence[str] = (  # This is for static checkers, in runtime it will be
     'diagnostics',
     'elapsedTime',
     'fullName',
+    'improveExceptionHandling',
     'export',
     'systemVersions',
     'typechecked',
@@ -814,6 +874,7 @@ if RUNNING_IN_WORKER:  ##
         del export
         __all__ = ()
         __export__ = ()
+        improveExceptionHandling()
         create_task(_autoExport())  # Make sure this module gets fully loaded before `_autoExport()` is called – to avoid circular import errors if anything being imported tries to import something from `workerlib`, e.g., `anyCall`
     else:
         # If a user is importing this module into a worker, they MUST call `export()` explicitly
@@ -823,6 +884,7 @@ if RUNNING_IN_WORKER:  ##
             'diagnostics',
             'elapsedTime',
             'fullName',
+            'improveExceptionHandling',
             'export',
             'systemVersions',
             'typechecked',
@@ -914,7 +976,7 @@ else:  ##  MAIN THREAD
 
     @typechecked  # Public API
     async def connectToWorker(workerName: str | None = None) -> Worker:  # ToDo: Refactor it somehow to be compatible with other languages
-        """
+        """  # ToDo: connectToPythonWorker() ? connectTo_Worker() ?
         Connects to a named worker with the specified `name`.
         That worker would use this `name` as a prefix to console logging messages.
 
@@ -981,6 +1043,7 @@ else:  ##  MAIN THREAD
         'diagnostics',
         'elapsedTime',
         'fullName',
+        'improveExceptionHandling',
         'systemVersions',
         'typechecked',
     )
