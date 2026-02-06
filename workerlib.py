@@ -28,6 +28,7 @@ from re import search
 import sys
 from sys import flags, modules, platform, stderr, version as _pythonVersion
 import threading
+from _thread import _ExceptHookArgs
 from time import time
 from traceback import extract_tb, StackSummary
 from types import ModuleType, TracebackType  # noqa: TC003
@@ -506,7 +507,30 @@ async def _to_py(obj: object) -> object:
     return await _Adapter.decodeSecond(obj)
 
 @typechecked
-def improveExceptionHandling(displayFunc: Callable[..., Any] = partial(_log, file = stderr)) -> None:
+def exceptionHandler(problem: str,
+                     exceptionType: type[BaseException | None] | None = None,
+                     exception: BaseException | None = None,
+                     traceback: TracebackType | None = None,
+                     suffix: str | None = None,
+                     displayFunction: _Callable | None = None,
+                     **kwargs: Any,
+                     ) -> object | str:
+    if not exceptionType:
+        exceptionType = type(exception)  # May be `None`
+    assert exceptionType
+    if not traceback and exception:
+        traceback = exception.__traceback__
+    if not displayFunction:
+        displayFunction = partial(_log, file = stderr)
+    tracebackStr = "\nTraceback (most recent call last):\n" + '\n'.join(extract_tb(traceback).format()) if traceback else ''
+    ret = f"\nERROR: {problem}, type {fullName(exceptionType)}:\n{exception}{tracebackStr}{f"\n\n{suffix}\n" if suffix else ''}"
+    return displayFunction(ret, **kwargs) or ret
+
+@typechecked
+def improveExceptionHandling(suffix: str | None = None,
+                             displayFunction: Callable[..., Any] | None = None,
+                             **kwargs: Any,
+                             ) -> None:
     stackSummary_format: Final[Callable[[StackSummary], list[str]]] = StackSummary.format
     def patchedFormat(self: StackSummary) -> list[str]:  # Patching global traceback formatting routine
         def showExec(line: str) -> str:
@@ -515,35 +539,25 @@ def improveExceptionHandling(displayFunc: Callable[..., Any] = partial(_log, fil
     StackSummary.format = patchedFormat  # type: ignore[method-assign]
 
     @typechecked
-    def exceptionHandler(problem: str,
-                         exceptionType: type[BaseException | None] | None = None,
-                         exception: BaseException | None = None,
-                         traceback: TracebackType | None = None,
-                         ) -> None:
-        if exceptionType is None:
-            exceptionType = type(exception)
-        if traceback is None and exception:
-            traceback = exception.__traceback__
-        tracebackStr = '\nTraceback (most recent call last):\n' + '\n'.join(extract_tb(traceback).format()) if traceback else ''
-        displayFunc(f"\nERROR: {problem}, type {fullName(exceptionType)}:\n{exception}{tracebackStr}")
-
-    @typechecked
     def mainExceptionHandler(exceptionType: type[BaseException] | None = None,
                              exception: BaseException | None = None,
                              traceback: TracebackType | None = None) -> None:
         exceptionHandler("Uncaught exception in the main thread",
-                         exceptionType, exception, traceback)
+                         exceptionType, exception, traceback,
+                         suffix, displayFunction, **kwargs)
 
     @typechecked
-    def threadExceptionHandler(arg: Any) -> None:
-        exceptionHandler(f"Uncaught exception in thread {arg.thread}",
-                         arg.exc_type, arg.exc_value, arg.exc_traceback)
+    def threadExceptionHandler(arg: _ExceptHookArgs) -> None:
+        exceptionHandler(f"Uncaught exception in thread {arg.thread and arg.thread.name}",
+                         arg.exc_type, arg.exc_value, arg.exc_traceback,
+                         suffix, displayFunction, **kwargs)
 
     @typechecked
     def loopExceptionHandler(_loop: AbstractEventLoop,
                              context: dict[str, Any]) -> None:
-        exceptionHandler("Uncaught exception in async loop",
-                         exception = context.get('exception'))
+        exceptionHandler(f"Uncaught exception in async loop{f":\n{message}" if (message := context.get('message')) else ''}",  # pylint: disable=used-before-assignment
+                         None, context.get('exception'), None,
+                         suffix, displayFunction, **kwargs)
 
     # Setting `exceptionHandler()` to handle uncaught exceptions
     sys.excepthook = mainExceptionHandler
@@ -631,6 +645,7 @@ __all__: Sequence[str] = (  # This is for static checkers, in runtime it will be
     'connectToWorker',
     'diagnostics',
     'elapsedTime',
+    'exceptionHandler',
     'fullName',
     'improveExceptionHandling',
     'export',
@@ -883,6 +898,7 @@ if RUNNING_IN_WORKER:  ##
             'anyCall',
             'diagnostics',
             'elapsedTime',
+            'exceptionHandler',
             'fullName',
             'improveExceptionHandling',
             'export',
@@ -1042,6 +1058,7 @@ else:  ##  MAIN THREAD
         'connectToWorker',
         'diagnostics',
         'elapsedTime',
+        'exceptionHandler',
         'fullName',
         'improveExceptionHandling',
         'systemVersions',
