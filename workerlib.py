@@ -235,6 +235,9 @@ def _importModule(moduleName: str | None) -> ModuleType:
         return modules[_BUILTINS]
     if moduleName in (__name__, 'workerlib'):
         return modules[__name__]
+    if moduleName == '.':
+        assert _callingModule
+        return _callingModule
     assert moduleName
     if module := modules.get(moduleName):
         return module
@@ -252,7 +255,7 @@ def _importFromModule(module: str | ModuleType, names: str | Iterable[str]) -> I
 
     Returns an `Iterator` of imported objects.
     """
-    if isinstance(module, str):  # ToDo: Find a way to import from '.' – user's module; see `target` in `export()`
+    if isinstance(module, str):
         module = _importModule(module)
     if isinstance(names, str):
         names = (names,)
@@ -392,7 +395,7 @@ class _Adapter:
         _error(f"No adapter found to decode class '{adapterName}'")
 
     @classmethod
-    def _fromModule(cls, module: ModuleType, names: Sequence[str]) -> Self:  # ToDo: Find a way to import from '.' – user's module; see `target` in `export()`
+    def _fromModule(cls, module: ModuleType, names: Sequence[str]) -> Self:
         """
         Imports the specified `qualNames` from the specified `module`.
 
@@ -663,7 +666,6 @@ if RUNNING_IN_WORKER:  ##
     _log("Starting worker")
 
     _connected = False
-    _callingModule: ModuleType | None = None
 
     for info in diagnostics:
         _log(info)
@@ -833,11 +835,13 @@ if RUNNING_IN_WORKER:  ##
         firstExport = not _callingModule
 
         if not _callingModule:  # Do this only once
-            currentFrame = currentframe()
-            assert currentFrame
-            _callingModule = getmodule(currentFrame.f_back)  # Calling module
-
+            cf = currentframe()  # It's difficult to make it into a function as that would introduce even more stack frames
+            if (callingFrame := cf and cf.f_back and cf.f_back.f_back):  # Remember @typechecked
+                _callingModule = getmodule(callingFrame) or modules.get(callingFrame.f_globals.get('__name__'))  # type: ignore[arg-type]
+            if not _callingModule:
+                _callingModule = modules['__main__']
             assert _callingModule
+
             _imports(_callingModule)  # Doing imports this late so that potential errors would not interrupt startup too early
             _Adapter.fromConfig()
 
@@ -863,8 +867,9 @@ if RUNNING_IN_WORKER:  ##
 
         Wraps and exports functions listed in the config.
         """
-        global _callingModule  # noqa: PLW0603  # pylint: disable=global-statement
         assert not _connected
+
+        global _callingModule  # noqa: PLW0603  # pylint: disable=global-statement
         assert not _callingModule
         _callingModule = modules[__name__]
 
@@ -993,7 +998,7 @@ else:  ##  MAIN THREAD
 
     @typechecked  # Public API
     async def connectToWorker(workerName: str | None = None) -> Worker:  # ToDo: Refactor it somehow to be compatible with other languages
-        """  # ToDo: connectToPythonWorker() ? connectTo_Worker() ?
+        """  # ToDo: connectToPythonWorker() ? connectTo_Worker() ? It's not even "connect", it's "testAndExchangeInfo", "_setup()"?
         Connects to a named worker with the specified `name`.
         That worker would use this `name` as a prefix to console logging messages.
 
@@ -1030,13 +1035,22 @@ else:  ##  MAIN THREAD
 
         assert workerName
 
+        global _callingModule  # noqa: PLW0603  # pylint: disable=global-statement
+        if not _callingModule:
+            cf = currentframe()  # It's difficult to make it into a function as that would introduce even more stack frames
+            if (callingFrame := cf and cf.f_back and cf.f_back.f_back):  # Remember @typechecked
+                _callingModule = getmodule(callingFrame) or modules.get(callingFrame.f_globals.get('__name__'))  # type: ignore[arg-type]
+            if not _callingModule:
+                _callingModule = modules['__main__']
+        assert _callingModule
+
         _Adapter.fromConfig()
 
         _log(f'Looking for a worker named "{workerName}"')
         # vv WRAPPED CALL vv
         worker = await workers[workerName]
         # ^^ WRAPPED CALL ^^
-        _log("Got the worker, connecting")
+        _log("Got the worker, connecting")  # ToDo: If anyCall is enabled, do it through anyCall? Or not, because anyCall is just a function?
         data = cast(Sequence[str], await _mainSerialized(worker._connectFromMain, '_connectFromMain')(_CONNECT_REQUEST, workerName, attributes))  # noqa: SLF001  # pylint: disable=protected-access
         if not data or data[0] != _CONNECT_RESPONSE:
             _error(f"Connection to worker is misconfigured, can't continue: {type(data)}: {data!r}")
