@@ -165,9 +165,9 @@ _TAG_ATTR = 'tag'
 _NAME_ATTR = 'name'
 
 @typechecked
-def _log(*args: object, **kwargs: Any) -> None:
+def _log(*args: object, **kwargs: object) -> None:
     """Logs a message to the console."""
-    print(f"[{_NAME}]", *args, flush = True, **kwargs)
+    print(f"[{_NAME}]", *args, flush = True, **kwargs)  # type: ignore[call-overload]
 
 @typechecked
 def _warn(*args: object) -> None:
@@ -212,15 +212,15 @@ def _countArgs(func: _CallableOrCoroutine, *paramKinds: _ParameterKind) -> int:
     return len(list(_getArgNames(func, *paramKinds)))
 
 @typechecked
-async def _gatherList[S, V](coro: Callable[[S], Coroutine[None, None, V]], iterable: Iterable[S]) -> list[V]:
+async def _gatherList[S, V](coro: Callable[[S], _Coroutine[V]], iterable: Iterable[S]) -> list[V]:
     return await gather(*(coro(s) for s in iterable))
 
 @typechecked
-async def _gatherMap[S, V](coro: Callable[[S], Coroutine[None, None, V]], mapping: Mapping[S, S]) -> dict[V, V]:
+async def _gatherMap[S, V](coro: Callable[[S], _Coroutine[V]], mapping: Mapping[S, S]) -> dict[V, V]:
     return {k: v for (k, v) in await gather(*(gather(*(coro(s) for s in k_v)) for k_v in mapping.items()))}  # pylint: disable=unnecessary-comprehension
 
 @typechecked
-async def _gatherValues[K, S, V](coro: Callable[[S], Coroutine[None, None, V]], mapping: Mapping[K, S]) -> dict[K, V]:
+async def _gatherValues[K, S, V](coro: Callable[[S], _Coroutine[V]], mapping: Mapping[K, S]) -> dict[K, V]:
     return dict(zip(mapping.keys(), await gather(*(coro(s) for s in mapping.values())), strict = True))
 
 @typechecked
