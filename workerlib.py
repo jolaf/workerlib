@@ -32,7 +32,7 @@ from _thread import _ExceptHookArgs
 from time import time
 from traceback import extract_tb, StackSummary
 from types import ModuleType, TracebackType  # noqa: TC003
-from typing import cast, final, Any, ClassVar, Final, Literal, NoReturn, ReadOnly, Required, Self, TypeAlias, TypedDict, Union
+from typing import cast, final, Any, ClassVar, Final, NoReturn, ReadOnly, Required, Self, TypeAlias, TypedDict, Union
 
 if version_info < (3, 13):  # noqa: UP036
     raise RuntimeError("This module requires Python 3.13+")
@@ -143,12 +143,13 @@ _ADAPTER_VALUE: Final[str] = 'value'
 _ADAPTER_FULLNAME: Final[str] = 'className'
 _START_TIME: Final[str] = 'startTime'
 _START_TIME_ADAPTER: Final[str] = _WORKERLIB_PREFIX + _START_TIME  # Used to differentiate start time data from real adapters
-_DEFAULT = '__default'
-_PICKLE = 'pickle'
+_DEFAULT: Final[object] = object()
+_PICKLE: Final[str] = 'pickle'
 
-_BUILTINS = 'builtins'
+_BUILTINS: Final[str] = 'builtins'
 _BUILTINS_NAMES: Final[Sequence[str | None]] = (_BUILTINS, '', 'None', None)
-_builtins = modules[_BUILTINS].__dict__
+_builtins: Final[Mapping[str, object]] = modules[_BUILTINS].__dict__
+_callingModule: ModuleType | None = None
 
 _BUILTIN_SPECIALS: Final[Mapping[str, type[object] | str | None]] = {
     '': None,
@@ -161,8 +162,8 @@ _BUILTIN_SPECIALS: Final[Mapping[str, type[object] | str | None]] = {
 _CONNECT_REQUEST: Final[str] = _WORKERLIB_PREFIX + 'connectRequest'
 _CONNECT_RESPONSE: Final[str] = _WORKERLIB_PREFIX + 'connectResponse'
 
-_TAG_ATTR = 'tag'
-_NAME_ATTR = 'name'
+_TAG_ATTR: Final[str] = 'tag'
+_NAME_ATTR: Final[str] = 'name'
 
 @typechecked
 def _log(*args: object, **kwargs: object) -> None:
@@ -261,10 +262,10 @@ def _importFromModule(module: str | ModuleType, names: str | Iterable[str]) -> I
     for name in names:
         y: object
         if '.' not in name:
-            if (y := _BUILTIN_SPECIALS.get(name, _DEFAULT)) != _DEFAULT:
+            if (y := _BUILTIN_SPECIALS.get(name, _DEFAULT)) is not _DEFAULT:
                 yield y
                 continue
-            if (y := _builtins.get(name, _DEFAULT)) != _DEFAULT:
+            if (y := _builtins.get(name, _DEFAULT)) is not _DEFAULT:
                 yield y
                 continue
         y = module
@@ -293,7 +294,7 @@ class _Adapter:
 
     type _EncoderType[T = object] = Callable[[T], object | _Coroutine[object]] | None
     type _DecoderType[T = object] = Callable[[object], T | _Coroutine[T]] | Callable[[object, str | None], T | _Coroutine[T]]
-    type _AdapterEncoding = Mapping[str, object] | object | Literal["__default"]
+    type _AdapterEncoding = Mapping[str, object] | object
 
     cls: type
     encoder: _EncoderType
@@ -357,7 +358,7 @@ class _Adapter:
     @classmethod
     async def _findAndEncode(cls, adapters: Mapping[str, Self], obj: object) -> _AdapterEncoding:
         for adapter in adapters.values():
-            if (ret := await adapter._encode(obj)) != _DEFAULT:  # pylint: disable=protected-access
+            if (ret := await adapter._encode(obj)) is not _DEFAULT:  # pylint: disable=protected-access
                 return ret
         return _DEFAULT
 
@@ -372,7 +373,7 @@ class _Adapter:
         return await cls._findAndEncode(cls.secondAdapters, obj)
 
     @classmethod
-    async def decodeFirst(cls, obj: object) -> object | Literal["__default"]:
+    async def decodeFirst(cls, obj: object) -> object:
         return await cls.totalAdapter._decode(obj) if cls.totalAdapter else _DEFAULT  # pylint: disable=protected-access
 
     @classmethod
@@ -471,7 +472,7 @@ async def _to_js(obj: object) -> object:
     Recurses into collections, uses adapters, and makes every effort possible
     to produce a transferable result.
     """
-    if (ret := await _Adapter.encodeFirst(obj)) != _DEFAULT:
+    if (ret := await _Adapter.encodeFirst(obj)) is not _DEFAULT:
         return ret
     if isinstance(obj, _BasicTypes):
         return obj  # Save it from being converted to `tuple` as an `Iterable`
@@ -479,7 +480,7 @@ async def _to_js(obj: object) -> object:
         return await _gatherMap(_to_js, obj)
     if isinstance(obj, Iterable):
         return await _gatherList(_to_js, obj)
-    if (ret := await _Adapter.encodeSecond(obj)) != _DEFAULT:
+    if (ret := await _Adapter.encodeSecond(obj)) is not _DEFAULT:
         return ret
     _warn(f"No adapter found for class {type(obj)}, and transport layer (JavaScript structured clone) would probably not accept it as is, see https://developer.mozilla.org/docs/Web/API/Web_Workers_API/Structured_clone_algorithm")
     return obj  # Trying to pass the object as is, hoping it would work
@@ -494,7 +495,7 @@ async def _to_py(obj: object) -> object:
     """
     if hasattr(obj, 'to_py'):  # JsProxy
         return await _to_py(obj.to_py())
-    if (ret := await _Adapter.decodeFirst(obj)) != _DEFAULT:
+    if (ret := await _Adapter.decodeFirst(obj)) is not _DEFAULT:
         return ret
     if isinstance(obj, _BasicTypes):
         return obj  # Save it from being converted to `tuple` as an `Iterable`
