@@ -662,7 +662,7 @@ if RUNNING_IN_WORKER:  ##
     _log("Starting worker")
 
     _connected = False
-    _targetModule: ModuleType | None = None
+    _callingModule: ModuleType | None = None
 
     for info in diagnostics:
         _log(info)
@@ -824,32 +824,32 @@ if RUNNING_IN_WORKER:  ##
 
         May be called multiple times until a connection from the main thread is made.
         """
-        global _targetModule  # noqa: PLW0603  # pylint: disable=global-statement
+        global _callingModule  # noqa: PLW0603  # pylint: disable=global-statement
 
         if _connected:
             _error("Connection to the main thread already established, can't export new functions after that")
 
-        firstExport = not _targetModule
+        firstExport = not _callingModule
 
-        if not _targetModule:  # Do this only once
+        if not _callingModule:  # Do this only once
             currentFrame = currentframe()
             assert currentFrame
-            _targetModule = getmodule(currentFrame.f_back)  # Calling module
+            _callingModule = getmodule(currentFrame.f_back)  # Calling module
 
-            assert _targetModule
-            _imports(_targetModule)  # Doing imports this late so that potential errors would not interrupt startup too early
+            assert _callingModule
+            _imports(_callingModule)  # Doing imports this late so that potential errors would not interrupt startup too early
             _Adapter.fromConfig()
 
-            _targetModule._connectFromMain = _connectFromMain  # type: ignore[attr-defined]  # pylint: disable=protected-access
-            _targetModule.__export__ = (_connectFromMain.__name__,)  # type: ignore[attr-defined]
+            _callingModule._connectFromMain = _connectFromMain  # type: ignore[attr-defined]  # pylint: disable=protected-access
+            _callingModule.__export__ = (_connectFromMain.__name__,)  # type: ignore[attr-defined]
 
         exportNames: list[str] = []
         for func in functions:
-            setattr(_targetModule, func.__name__, _workerWrap(func))
+            setattr(_callingModule, func.__name__, _workerWrap(func))
             exportNames.append(func.__name__)
 
-        exportNamesTuple = tuple(chain(_targetModule.__export__, exportNames))
-        _targetModule.__export__ = exportNamesTuple  # type: ignore[attr-defined]
+        exportNamesTuple = tuple(chain(_callingModule.__export__, exportNames))
+        _callingModule.__export__ = exportNamesTuple  # type: ignore[attr-defined]
         modules[__name__].__export__ = exportNamesTuple  # type: ignore[attr-defined]  # This is only needed to make `_connectFromMain()` code simple and universal for both `export()` and `_autoExport()`
         _log("Providing functions:", ', '.join(name for name in exportNamesTuple if name != _connectFromMain.__name__))
         if firstExport:
@@ -862,10 +862,10 @@ if RUNNING_IN_WORKER:  ##
 
         Wraps and exports functions listed in the config.
         """
-        global _targetModule  # noqa: PLW0603  # pylint: disable=global-statement
+        global _callingModule  # noqa: PLW0603  # pylint: disable=global-statement
         assert not _connected
-        assert not _targetModule
-        _targetModule = modules[__name__]
+        assert not _callingModule
+        _callingModule = modules[__name__]
 
         _imports()
         _Adapter.fromConfig()
@@ -874,13 +874,13 @@ if RUNNING_IN_WORKER:  ##
         for (funcName, func) in _importSection(_EXPORTS_SECTION):
             if not callable(func):
                 _error(f'Bad exported function "{funcName}", must be a class/function/coroutine, got {type(func)}')
-            setattr(_targetModule, funcName, _workerWrap(func))
+            setattr(_callingModule, funcName, _workerWrap(func))
             exportNames.append(funcName)
 
         if len(exportNames) < 2:
             _warn("No functions found to export, check `[exports]` section in the config")
 
-        _targetModule.__export__ = tuple(exportNames)  # type: ignore[attr-defined]
+        _callingModule.__export__ = tuple(exportNames)  # type: ignore[attr-defined]
         _log("Providing functions:", ', '.join(name for name in exportNames if name != _connectFromMain.__name__))
         _log("Started worker, waiting for connection from the main thread")
 
