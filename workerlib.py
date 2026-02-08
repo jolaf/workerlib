@@ -535,41 +535,44 @@ def improveExceptionHandling(suffix: str | None = None,
                              displayFunction: Callable[..., Any] | None = None,
                              **kwargs: Any,
                              ) -> None:
-    stackSummary_format: Final[Callable[[StackSummary], list[str]]] = StackSummary.format
-    def patchedFormat(self: StackSummary) -> list[str]:  # Patching global traceback formatting routine
-        def showExec(line: str) -> str:
+    stackSummary_format = StackSummary.format
+    def patchedFormat(self: StackSummary, **kwargs: Any) -> list[str]:  # Patching global traceback formatting routine
+        def fix(line: str) -> str:
+            if not RUNNING_IN_WORKER:
+                line = line.rstrip()  # Fix Pyodide bug with inserting empty lines into traceback
             return '>>' + line[2:] if '<exec>' in line else line  # Make `<exec>` lines more visible
-        return [showExec(line.rstrip()) for line in stackSummary_format(self) if line and not line.isspace()]  # Fix Pyodide bug with inserting empty lines into traceback
+        return [fix(line) for line in stackSummary_format(self, **kwargs) if line and not line.isspace()]
     StackSummary.format = patchedFormat  # type: ignore[method-assign]
 
-    @typechecked
-    def mainExceptionHandler(exceptionType: type[BaseException] | None = None,
-                             exception: BaseException | None = None,
-                             traceback: TracebackType | None = None) -> None:
-        exceptionHandler("Uncaught exception in the main thread",
-                         exceptionType, exception, traceback,
-                         suffix, displayFunction, **kwargs)
-
-    @typechecked
-    def threadExceptionHandler(arg: _ExceptHookArgs) -> None:
-        exceptionHandler(f"Uncaught exception in thread {arg.thread and arg.thread.name}",
-                         arg.exc_type, arg.exc_value, arg.exc_traceback,
-                         suffix, displayFunction, **kwargs)
-
-    @typechecked
-    def loopExceptionHandler(_loop: AbstractEventLoop,
-                             context: dict[str, Any]) -> None:
-        exceptionHandler(f"Uncaught exception in async loop{f":\n{message}" if (message := context.get('message')) else ''}",  # pylint: disable=used-before-assignment
-                         None, context.get('exception'), None,
-                         suffix, displayFunction, **kwargs)
-
-    # Setting `exceptionHandler()` to handle uncaught exceptions
-    sys.excepthook = mainExceptionHandler
-    threading.excepthook = threadExceptionHandler
-    with suppress(RuntimeError):
-        get_running_loop().set_exception_handler(loopExceptionHandler)
-
     if not RUNNING_IN_WORKER:
+
+        @typechecked
+        def mainExceptionHandler(exceptionType: type[BaseException] | None = None,
+                                 exception: BaseException | None = None,
+                                 traceback: TracebackType | None = None) -> None:
+            exceptionHandler("Uncaught exception in the main thread",
+                             exceptionType, exception, traceback,
+                             suffix, displayFunction, **kwargs)
+
+        @typechecked
+        def threadExceptionHandler(arg: _ExceptHookArgs) -> None:
+            exceptionHandler(f"Uncaught exception in thread {arg.thread and arg.thread.name}",
+                             arg.exc_type, arg.exc_value, arg.exc_traceback,
+                             suffix, displayFunction, **kwargs)
+
+        @typechecked
+        def loopExceptionHandler(_loop: AbstractEventLoop,
+                                 context: dict[str, Any]) -> None:
+            exceptionHandler(f"Uncaught exception in async loop{f":\n{message}" if (message := context.get('message')) else ''}",  # pylint: disable=used-before-assignment
+                             None, context.get('exception'), None,
+                             suffix, displayFunction, **kwargs)
+
+        # Setting `exceptionHandler()` to handle uncaught exceptions
+        sys.excepthook = mainExceptionHandler
+        threading.excepthook = threadExceptionHandler
+        with suppress(RuntimeError):
+            get_running_loop().set_exception_handler(loopExceptionHandler)
+
         # Now when uncaught exceptions are controlled, errors printed by default into DOM may be hidden
         from pyscript import document  # pylint: disable=import-outside-toplevel
         from js import CSSStyleSheet  # pylint: disable=import-outside-toplevel
@@ -731,7 +734,7 @@ if RUNNING_IN_WORKER:  ##
                     _START_TIME: time(),  # Starting calculating time it would take to transfer the return value to the main thread
                 }
             except BaseException as ex:
-                _log(f"Exception at {func.__name__}: {ex}", file = stderr)
+                _warn(f"Exception at the worker call `{func.__name__}()`: {fullName(ex)}: {ex}")
                 raise
 
         return workerLoggedWrapper
@@ -940,8 +943,8 @@ else:  ##  MAIN THREAD
         async def mainSerializedWrapper(*args_: object, **kwargs: object) -> T:
             assert isinstance(func, JsProxy), type(func)
             (args, kwargs) = await gather(_gatherList(_to_js, args_), _gatherValues(_to_js, kwargs))
-            # vv WRAPPED CALL vv
-            ret = await cast(_CoroutineFunction[T], func)(*args, kwargs)  # Passing `kwargs` as a positional argument because `**kwargs` don't get serialized properly and are sent as the last of `args` anyway
+            # vv WRAPPED CALL vv  # Passing `kwargs` as a positional argument because `**kwargs` don't get serialized properly and are sent as the last of `args` anyway
+            ret = await cast(_CoroutineFunction[T], func)(*args, kwargs)
             # ^^ WRAPPED CALL ^^
             return cast(T, await _to_py(ret))
 
@@ -1050,7 +1053,7 @@ else:  ##  MAIN THREAD
         # vv WRAPPED CALL vv
         worker = await workers[workerName]
         # ^^ WRAPPED CALL ^^
-        _log("Got the worker, connecting")  # ToDo: If anyCall is enabled, do it through anyCall? Or not, because anyCall is just a function?
+        _log("Got the worker, connecting")
         data = cast(Sequence[str], await _mainSerialized(worker._connectFromMain, '_connectFromMain')(_CONNECT_REQUEST, workerName, attributes))  # noqa: SLF001  # pylint: disable=protected-access
         if not data or data[0] != _CONNECT_RESPONSE:
             _error(f"Connection to worker is misconfigured, can't continue: {type(data)}: {data!r}")
