@@ -1,4 +1,4 @@
-#
+#  noqa: INP001
 # Note: this library is intended for PyScript / Pyodide apps, it is useless outside the browser
 #
 # Tested on PyScript 26.2.1 / Pyodide 0.29.3 / Python 3.13.2
@@ -20,7 +20,7 @@ from collections.abc import Buffer, Callable, Coroutine, Iterable, Iterator, Map
 from contextlib import suppress
 from functools import partial, wraps
 from importlib import import_module
-from inspect import currentframe, getmodule, isclass, iscoroutinefunction, signature, Parameter as P, _ParameterKind
+from inspect import currentframe, getmodule, isclass, iscoroutinefunction, signature, Parameter as P, _ParameterKind  # noqa: N817
 from itertools import chain
 from numbers import Real
 from pickle import dumps as pickleDump, loads as pickleLoad
@@ -31,7 +31,7 @@ import threading
 from _thread import _ExceptHookArgs
 from time import time
 from traceback import extract_tb, StackSummary
-from types import ModuleType, TracebackType  # noqa: TC003
+from types import ModuleType, TracebackType
 from typing import cast, final, Any, ClassVar, Final, NoReturn, ReadOnly, Required, Self, TypeAlias, TypedDict, Union
 
 if version_info < (3, 13):  # noqa: UP036
@@ -39,7 +39,7 @@ if version_info < (3, 13):  # noqa: UP036
 
 try:
     from pyscript.web import page  # This would break in a worker if CORS is not configured  # pylint: disable=import-error, no-name-in-module
-except AttributeError as ex:
+except AttributeError:
     if RUNNING_IN_WORKER:
         page = None  # type: ignore[assignment]  # This would only inhibit PyScript version detection, not mission-critical
     else:  # This shouldn't ever happen
@@ -116,14 +116,10 @@ except ImportError:
     def typechecked[T](func: _CallableOrCoroutine[T]) -> _CallableOrCoroutine[T]:  # type: ignore[no-redef]  # pylint: disable=redefined-outer-name
         return func
 
-type _Args[T = object] = tuple[T, ...]
-type _Kwargs[T = object] = dict[str, T]
-type _ArgsKwargs[AT = object, KT = AT] = tuple[_Args[AT], _Kwargs[KT]]
-
 type _Time = float | int
 type _Timed[T] = Mapping[str, str | _Time | T]
 
-_BasicTypes: TypeAlias = Real | str | Buffer | None  # Using `type` breaks `isinstance()`
+_BasicTypes: TypeAlias = Real | str | Buffer | None  # Using `type` breaks `isinstance()`  # noqa: UP040
 _Transferable: TypeAlias = _BasicTypes | Iterable  # type: ignore[type-arg]  # Using `type` or adding `[Any]` breaks `isinstance()`  # noqa: UP040
 
 
@@ -184,7 +180,7 @@ def _error(message: str) -> NoReturn:
     raise RuntimeError(f"[{_NAME}] ERROR: {message}")
 
 @typechecked  # Public API
-def elapsedTime(startTime: _Time) -> str:  # noqa: PYI041  # beartype is right enforcing this: https://github.com/beartype/beartype/issues/66
+def elapsedTime(startTime: _Time) -> str:  # beartype is right enforcing this: https://github.com/beartype/beartype/issues/66
     """
     Returns a diagnostic string mentioning time,
     in milliseconds or seconds, since `startTime`.
@@ -218,7 +214,7 @@ async def _gatherList[S, V](coro: Callable[[S], _Coroutine[V]], iterable: Iterab
 
 @typechecked
 async def _gatherMap[S, V](coro: Callable[[S], _Coroutine[V]], mapping: Mapping[S, S]) -> dict[V, V]:
-    return {k: v for (k, v) in await gather(*(gather(*(coro(s) for s in k_v)) for k_v in mapping.items()))}  # pylint: disable=unnecessary-comprehension
+    return {k: v for (k, v) in await gather(*(gather(*(coro(s) for s in k_v)) for k_v in mapping.items()))}  # noqa: C416  # pylint: disable=unnecessary-comprehension
 
 @typechecked
 async def _gatherValues[K, S, V](coro: Callable[[S], _Coroutine[V]], mapping: Mapping[K, S]) -> dict[K, V]:
@@ -289,6 +285,9 @@ class All(tuple[object]):
     Special class to use in "All" adapter to process everything,
     bypassing JS-compatible data conversion.
     """
+
+    __slots__ = ()
+
     def __init__(self) -> NoReturn:
         _error('"All" class is just a marker, it should never be instantiated')
 
@@ -311,9 +310,9 @@ class _Adapter:
         if encoder:
             if not (numEncoderArguments := _countArgs(encoder, P.POSITIONAL_ONLY, P.POSITIONAL_OR_KEYWORD, P.VAR_POSITIONAL)):
                 _error(f"Adapter encoder for type {self.cls} accepts no positional arguments: {self.encoder}")
-            if numEncoderArguments > 1:
-                if (n := _countArgs(encoder, P.POSITIONAL_ONLY)) > 1:
-                    _error(f"Adapter encoder for type {self.cls} has too many positional arguments: {self.encoder}, expected 1, got {n}")
+            if numEncoderArguments > 1 and \
+                    (n := _countArgs(encoder, P.POSITIONAL_ONLY)) > 1:
+                _error(f"Adapter encoder for type {self.cls} has too many positional arguments: {self.encoder}, expected 1, got {n}")
 
         self.isTotal = issubclass(cls, All)
 
@@ -361,14 +360,14 @@ class _Adapter:
     @classmethod
     async def _findAndEncode(cls, adapters: Mapping[str, Self], obj: object) -> _AdapterEncoding:
         for adapter in adapters.values():
-            if (ret := await adapter._encode(obj)) is not _DEFAULT:  # pylint: disable=protected-access
+            if (ret := await adapter._encode(obj)) is not _DEFAULT:  # noqa: SLF001  # pylint: disable=protected-access
                 return ret
         return _DEFAULT
 
     @classmethod
     async def encodeFirst(cls, obj: object) -> _AdapterEncoding:
         if cls.totalAdapter:
-            return await cls.totalAdapter._encode(obj)  # pylint: disable=protected-access
+            return await cls.totalAdapter._encode(obj)  # noqa: SLF001  # pylint: disable=protected-access
         return await cls._findAndEncode(cls.firstAdapters, obj)
 
     @classmethod
@@ -377,7 +376,7 @@ class _Adapter:
 
     @classmethod
     async def decodeFirst(cls, obj: object) -> object:
-        return await cls.totalAdapter._decode(obj) if cls.totalAdapter else _DEFAULT  # pylint: disable=protected-access
+        return await cls.totalAdapter._decode(obj) if cls.totalAdapter else _DEFAULT  # noqa: SLF001  # pylint: disable=protected-access
 
     @classmethod
     async def decodeSecond(cls, obj: Mapping[object, object]) -> object:
@@ -388,8 +387,8 @@ class _Adapter:
         name = cast(str, obj[_ADAPTER_FULLNAME])
         value = obj[_ADAPTER_VALUE]
 
-        if adapter := (cls.firstAdapters.get(adapterName) or cls.secondAdapters.get(adapterName)):  # It must be exact equality check, not `isinstance()`; the idea is to find the adapter that encoded this data – no more, no less
-            return await adapter._decode(value, name)  # pylint: disable=protected-access
+        if adapter := (cls.firstAdapters.get(adapterName) or cls.secondAdapters.get(adapterName)):  # It must be exact equality check, not `isinstance()`; the idea is to find the adapter that encoded this data - no more, no less
+            return await adapter._decode(value, name)  # noqa: SLF001  # pylint: disable=protected-access
 
         # The data EXPLICITLY requests an adapter, so the unconverted object is definitely not expected
         _error(f"No adapter found to decode class '{adapterName}'")
@@ -574,8 +573,8 @@ def improveExceptionHandling(suffix: str | None = None,
             get_running_loop().set_exception_handler(loopExceptionHandler)
 
         # Now when uncaught exceptions are controlled, errors printed by default into DOM may be hidden
-        from pyscript import document  # pylint: disable=import-outside-toplevel
-        from js import CSSStyleSheet  # pylint: disable=import-outside-toplevel
+        from pyscript import document  # noqa: PLC0415  # pylint: disable=import-outside-toplevel
+        from js import CSSStyleSheet  # noqa: PLC0415  # pylint: disable=import-outside-toplevel
 
         styleSheet = CSSStyleSheet.new()
         styleSheet.replaceSync('.py-error { display: None; }')
@@ -653,9 +652,9 @@ __all__: Sequence[str] = (  # This is for static checkers, in runtime it will be
     'diagnostics',
     'elapsedTime',
     'exceptionHandler',
+    'export',
     'fullName',
     'improveExceptionHandling',
-    'export',
     'systemVersions',
     'typechecked',
 )
@@ -747,8 +746,7 @@ if RUNNING_IN_WORKER:  ##
     @typechecked
     def _importSection(section: str) -> Iterator[tuple[str, object]]:
         for (moduleName, names) in config.get(section, {}).items():
-            for (name, obj) in zip(names, _importFromModule(moduleName, names), strict = True):
-                yield (name, obj)
+            yield from zip(names, _importFromModule(moduleName, names), strict = True)
 
     @typechecked
     def _imports(targetModule: ModuleType | None = None) -> None:
@@ -780,7 +778,7 @@ if RUNNING_IN_WORKER:  ##
         [adapters]
         "workerlib" = ["All", "pickle", "pickle"]
 
-        One exported function, one adapter – and everything works, and very fast.
+        One exported function, one adapter - and everything works, and very fast.
         """
         funcName = funcNameAndArgs['funcName']
         args = funcNameAndArgs.get('args', ())
@@ -798,7 +796,7 @@ if RUNNING_IN_WORKER:  ##
         Service function; is exported to be called by `connectToWorker()`
         in the main thread right after a connection to this worker is made.
 
-        Assigns this worker a name sent from the main thread –
+        Assigns this worker a name sent from the main thread -
         usually the same name used to connect to this worker.
         Received name is further used as a prefix to logging messages.
 
@@ -848,7 +846,7 @@ if RUNNING_IN_WORKER:  ##
             _imports(_callingModule)  # Doing imports this late so that potential errors would not interrupt startup too early
             _Adapter.fromConfig()
 
-            _callingModule._connectFromMain = _connectFromMain  # type: ignore[attr-defined]  # pylint: disable=protected-access
+            _callingModule._connectFromMain = _connectFromMain  # type: ignore[attr-defined]  # noqa: SLF001  # pylint: disable=protected-access
             _callingModule.__export__ = (_connectFromMain.__name__,)  # type: ignore[attr-defined]
 
         exportNames: list[str] = []
@@ -899,7 +897,7 @@ if RUNNING_IN_WORKER:  ##
         __all__ = ()
         __export__ = ()
         improveExceptionHandling()
-        create_task(_autoExport())  # Make sure this module gets fully loaded before `_autoExport()` is called – to avoid circular import errors if anything being imported tries to import something from `workerlib`, e.g., `anyCall`
+        create_task(_autoExport())  # Make sure this module gets fully loaded before `_autoExport()` is called - to avoid circular import errors if anything being imported tries to import something from `workerlib`, e.g., `anyCall`  # noqa: RUF006
     else:
         # If a user is importing this module into a worker, they MUST call `export()` explicitly
         del _autoExport
@@ -908,9 +906,9 @@ if RUNNING_IN_WORKER:  ##
             'diagnostics',
             'elapsedTime',
             'exceptionHandler',
+            'export',
             'fullName',
             'improveExceptionHandling',
-            'export',
             'systemVersions',
             'typechecked',
         )
@@ -926,6 +924,7 @@ else:  ##  MAIN THREAD
     @typechecked  # Public API
     class Worker:
         """Stores PyScript `worker` object and decorated functions exported by a worker."""
+
         def __init__(self, worker: JsProxy) -> None:
             self.worker = worker
 
@@ -1001,7 +1000,7 @@ else:  ##  MAIN THREAD
 
     @typechecked  # Public API
     async def connectToWorker(workerName: str | None = None) -> Worker:  # ToDo: Refactor it somehow to be compatible with other languages
-        """  # ToDo: connectToPythonWorker() ? connectTo_Worker() ? It's not even "connect", it's "testAndExchangeInfo", "_setup()"?
+        """# ToDo: connectToPythonWorker() ? connectTo_Worker() ? It's not even "connect", it's "testAndExchangeInfo", "_setup()"?
         Connects to a named worker with the specified `name`.
         That worker would use this `name` as a prefix to console logging messages.
 
@@ -1058,7 +1057,7 @@ else:  ##  MAIN THREAD
         if not data or data[0] != _CONNECT_RESPONSE:
             _error(f"Connection to worker is misconfigured, can't continue: {type(data)}: {data!r}")
 
-        ret = Worker(worker)  # We can't return `worker`, as it is a `JsProxy` and we can't reassign its fields – `setattr()` is not working, so we have to create a class of our own to store wrapped functions.
+        ret = Worker(worker)  # We can't return `worker`, as it is a `JsProxy` and we can't reassign its fields - `setattr()` is not working, so we have to create a class of our own to store wrapped functions.
         for funcName in data[1:]:  # We can't get a list of exported functions from the `worker` object to wrap them, so we have to pass it over in our own way.
             assert funcName != '_connectFromMain'
             if not (func := getattr(worker, funcName, None)):
