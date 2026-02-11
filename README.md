@@ -227,8 +227,13 @@ and would like to simplify calls to its functions, this is your way.
 `worker.toml`:
 
 ```TOML
+experimental_remote_packages = true
+
+packages = [
+    "https://jolaf.github.io/workerlib/workerlib.toml",
+]
+
 [files]
-"./workerlib.py" = ""
 "./YourModule2.py" = ""
 ```
 
