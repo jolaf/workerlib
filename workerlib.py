@@ -90,7 +90,7 @@ except ImportError:
         try:
             scriptElement = next(e for e in page.find('script') if search(r'pyscript.*core\.js$', e.src))
             _pyscriptVersion = scriptElement.getAttribute('data-version') or \
-                    next(word for word in scriptElement.src.split('/') if search(r'\d', word))
+                    next(word for word in scriptElement.src.split('/') if search(r'\d', word) and ':' not in word)
         except Exception:  # noqa: BLE001
             _pyscriptVersion = "UNKNOWN"
 
@@ -836,7 +836,7 @@ if RUNNING_IN_WORKER:  ##
         firstExport = not _callingModule
 
         if not _callingModule:  # Do this only once
-            cf = currentframe()  # It's difficult to make it into a function as that would introduce even more stack frames
+            cf = currentframe()  # It's complicated to make it into a function as that would introduce even more stack frames
             if (callingFrame := cf and cf.f_back and cf.f_back.f_back):  # Remember @typechecked
                 _callingModule = getmodule(callingFrame) or modules.get(callingFrame.f_globals.get('__name__'))  # type: ignore[arg-type]
             if not _callingModule:
@@ -1039,7 +1039,7 @@ else:  ##  MAIN THREAD
 
         global _callingModule  # noqa: PLW0603  # pylint: disable=global-statement
         if not _callingModule:
-            cf = currentframe()  # It's difficult to make it into a function as that would introduce even more stack frames
+            cf = currentframe()  # It's complicated to make it into a function as that would introduce even more stack frames
             if (callingFrame := cf and cf.f_back and cf.f_back.f_back):  # Remember @typechecked
                 _callingModule = getmodule(callingFrame) or modules.get(callingFrame.f_globals.get('__name__'))  # type: ignore[arg-type]
             if not _callingModule:
